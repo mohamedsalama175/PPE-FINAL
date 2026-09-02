@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #16181D;
+  --color-body: #4B5058;
+  --color-canvas: #FAFAF9;
+  --color-surface: #FFFFFF;
+  --color-border: #E4E4E1;
+  --color-accent: #D97F1E;
+  --color-accent-subtle: #FCEFDC;
+  --color-safety-red: #C4392B;
+  --color-safety-green: #2F7D5A;
+  --color-safety-amber: #B8720B;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  :root {
+    --color-ink: #16181D;
+    --color-body: #4B5058;
+    --color-canvas: #FAFAF9;
+    --color-surface: #FFFFFF;
+    --color-border: #E4E4E1;
+    --color-accent: #D97F1E;
+    --color-accent-subtle: #FCEFDC;
+    --color-safety-red: #C4392B;
+    --color-safety-green: #2F7D5A;
+    --color-safety-amber-signal: #B8720B;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+/* Base Form Inputs */
+@layer components {
+  .input-base {
+    @apply flex h-9 w-full rounded-md border border-border bg-surface px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-body focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
