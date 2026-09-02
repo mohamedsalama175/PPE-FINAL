@@ -1,0 +1,537 @@
+@import "tailwindcss";
+
+@theme {
+  /* =========================================================================
+     1. Brand & Semantic Color Tokens (DESIGN_SYSTEM.md §1.1)
+     ========================================================================= */
+  --color-primary: #212B59;
+  --color-primary-light: #eaf1ff;
+  --color-primary-dark-light: rgba(33, 43, 89, 0.15);
+
+  --color-secondary: #805dca;
+  --color-secondary-light: #ebe4f7;
+  --color-secondary-dark-light: rgba(128, 93, 202, 0.15);
+
+  --color-success: #00ab55;
+  --color-success-light: #ddf5f0;
+  --color-success-dark-light: rgba(0, 171, 85, 0.15);
+
+  --color-danger: #e7515a;
+  --color-danger-light: #fff5f5;
+  --color-danger-dark-light: rgba(231, 81, 90, 0.15);
+
+  --color-warning: #e2a03f;
+  --color-warning-light: #fff9ed;
+  --color-warning-dark-light: rgba(226, 160, 63, 0.15);
+
+  --color-info: #2196f3;
+  --color-info-light: #e7f7ff;
+  --color-info-dark-light: rgba(33, 150, 243, 0.15);
+
+  --color-dark: #3b3f5c;
+  --color-dark-light: #eaeaec;
+  --color-dark-dark-light: rgba(59, 63, 92, 0.15);
+
+  --color-black: #0e1726;
+  --color-black-light: #e3e4eb;
+  --color-black-dark-light: rgba(14, 23, 38, 0.15);
+
+  --color-white: #ffffff;
+  --color-white-light: #e0e6ed;
+  --color-white-dark: #888ea8;
+
+  /* =========================================================================
+     2. Dynamic Semantic Tokens (Bound to CSS variables)
+     ========================================================================= */
+  --color-canvas: var(--canvas);
+  --color-surface: var(--panel);
+  --color-panel: var(--panel);
+  --color-elevated: var(--elevated);
+  --color-dropdown: var(--dropdown);
+  --color-border: var(--border-hairline);
+  --color-divider: var(--divider);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-text-placeholder: var(--text-placeholder);
+
+  /* Backwards compatibility aliases for existing views */
+  --color-ink: var(--text-primary);
+  --color-body: var(--text-secondary);
+  --color-accent: #212B59;
+  --color-accent-subtle: #eaf1ff;
+  --color-safety-red: #e7515a;
+  --color-safety-green: #00ab55;
+  --color-safety-amber: #e2a03f;
+  --color-safety-amber-signal: #e2a03f;
+
+  /* =========================================================================
+     3. Typography Tokens (DESIGN_SYSTEM.md §2)
+     ========================================================================= */
+  --font-sans: 'Almarai', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-Almarai: 'Almarai', sans-serif;
+
+  /* =========================================================================
+     4. Geometry, Spacing & Border Radii (DESIGN_SYSTEM.md §3)
+     ========================================================================= */
+  --radius-xs: 4px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
+  --radius-full: 9999px;
+
+  --spacing-4_5: 18px;
+  --spacing-header: 70px;
+  --spacing-sidebar: 260px;
+  --spacing-sidebar-collapsed: 70px;
+  --spacing-customizer: 400px;
+
+  /* =========================================================================
+     5. Shadows & Elevation (DESIGN_SYSTEM.md §3.4)
+     ========================================================================= */
+  --shadow-3xl: 0 2px 2px rgb(224 230 237 / 46%), 1px 6px 7px rgb(224 230 237 / 46%);
+  --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  --shadow-card-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.08);
+  --shadow-popover: 0 20px 60px -24px rgba(14, 28, 48, 0.45);
+  --shadow-drawer: 5px 0 25px 0 rgba(94, 92, 154, 0.1);
+
+  /* =========================================================================
+     6. Z-Index Scale (DESIGN_SYSTEM.md §3.6)
+     ========================================================================= */
+  --z-10: 10;
+  --z-20: 20;
+  --z-30: 30;
+  --z-40: 40;
+  --z-50: 50;
+  --z-51: 51;
+  --z-60: 60;
+}
+
+/* ===========================================================================
+   Base Theme Variables (Light Mode Only)
+   =========================================================================== */
+:root {
+  /* Canvas & Surfaces */
+  --canvas: #F5F6FD;
+  --panel: #FFFFFF;
+  --surface: #FFFFFF;
+  --elevated: #FFFFFF;
+  --dropdown: #FFFFFF;
+  --input-bg: #FFFFFF;
+  --table-header-bg: #F8FAFC;
+
+  /* Borders & Dividers */
+  --border-hairline: #E2E8F0;
+  --divider: #e0e6ed;
+  --border-input: #E2E8F0;
+  --border-table-row: rgba(224, 230, 237, 0.4);
+
+  /* Typography / Text Colors */
+  --text-primary: #1E293B;
+  --text-secondary: #64748B;
+  --text-muted: #888ea8;
+  --text-placeholder: #8A9AAF;
+
+  /* Scrollbars */
+  --scrollbar-thumb: #DDDDDD;
+  --scrollbar-thumb-hover: #c0c0c0;
+}
+
+/* ===========================================================================
+   Global Base Styling & Font Smoothing
+   =========================================================================== */
+@layer base {
+  body {
+    background-color: var(--canvas);
+    color: var(--text-primary);
+    font-family: var(--font-Almarai), 'Almarai', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+
+  /* RTL typography and directional resets */
+  [dir='rtl'] body,
+  [dir='rtl'] .main-section {
+    font-family: 'Almarai', sans-serif;
+  }
+
+  [dir='rtl'] select {
+    background-position: left 0.75rem center;
+  }
+
+  /* Strict LTR invariants for code blocks, phone numbers, and IDs */
+  pre,
+  code,
+  [dir='ltr'],
+  .dir-ltr {
+    direction: ltr;
+    text-align: left;
+  }
+
+  /* Custom Smooth Scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover);
+  }
+}
+
+/* ===========================================================================
+   Design System Components Layer (DESIGN_SYSTEM.md §4)
+   =========================================================================== */
+@layer components {
+  /* Standard Container Card / Surface Panel */
+  .panel {
+    @apply rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm transition-colors duration-200;
+  }
+
+  /* Form Control Inputs & Textareas */
+  .form-input,
+  .input-base {
+    @apply flex h-[40px] w-full rounded-xl border border-[#E2E8F0] bg-white px-4 py-2 text-sm text-[#1E293B] placeholder:text-[#B0BEC5] transition focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-[#F5F6FD];
+  }
+
+  .form-textarea {
+    @apply w-full rounded-xl border border-[#E2E8F0] bg-white px-4 py-3 text-sm text-[#1E293B] placeholder:text-[#8A9AAF] transition focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-[#F5F6FD];
+  }
+
+  .form-select {
+    @apply flex h-[40px] w-full rounded-xl border border-[#E2E8F0] bg-white px-4 py-2 text-sm text-[#1E293B] placeholder:text-[#B0BEC5] transition focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:bg-[#F5F6FD] pr-10 rtl:pl-10 rtl:pr-4;
+  }
+
+  /* Standard Buttons System */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium transition-all duration-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap;
+  }
+
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-xs min-h-[30px];
+  }
+
+  .btn-lg {
+    @apply px-7 py-2.5 text-base min-h-[46px];
+  }
+
+  .btn-primary {
+    @apply bg-primary text-white hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-primary/50;
+  }
+
+  .btn-secondary {
+    @apply bg-secondary text-white hover:bg-secondary/90 focus-visible:ring-2 focus-visible:ring-secondary/50;
+  }
+
+  .btn-outline-primary {
+    @apply border border-primary text-primary hover:bg-primary hover:text-white;
+  }
+
+  .btn-outline-secondary {
+    @apply border border-secondary text-secondary hover:bg-secondary hover:text-white;
+  }
+
+  .btn-danger {
+    @apply bg-danger text-white hover:bg-danger/90 focus-visible:ring-2 focus-visible:ring-danger/50;
+  }
+
+  .btn-success {
+    @apply bg-success text-white hover:bg-success/90 focus-visible:ring-2 focus-visible:ring-success/50;
+  }
+
+  .btn-warning {
+    @apply bg-warning text-white hover:bg-warning/90 focus-visible:ring-2 focus-visible:ring-warning/50;
+  }
+
+  .btn-info {
+    @apply bg-info text-white hover:bg-info/90 focus-visible:ring-2 focus-visible:ring-info/50;
+  }
+
+  .btn-dark {
+    @apply bg-dark text-white hover:bg-dark/90 focus-visible:ring-2 focus-visible:ring-dark/50;
+  }
+
+  /* Status Badges */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold tracking-wider;
+  }
+
+  .badge-primary {
+    @apply bg-primary-light text-primary;
+  }
+
+  .badge-success {
+    @apply bg-success-light text-success border border-success/20;
+  }
+
+  .badge-danger {
+    @apply bg-danger-light text-danger border border-danger/20;
+  }
+
+  .badge-warning {
+    @apply bg-warning-light text-warning border border-warning/20;
+  }
+
+  .badge-info {
+    @apply bg-info-light text-info border border-info/20;
+  }
+
+  .badge-secondary {
+    @apply bg-secondary-light text-secondary;
+  }
+
+  .badge-dark {
+    @apply bg-dark-light text-dark;
+  }
+
+  /* Data Table Layout Utilities */
+  .table-responsive {
+    @apply overflow-x-auto w-full;
+  }
+
+  .table-custom {
+    @apply w-full text-sm text-[#1E293B];
+  }
+
+  .table-custom thead tr {
+    @apply bg-[#F8FAFC] text-[#475569] font-bold border-b border-[#E2E8F0]/40;
+  }
+
+  .table-custom tbody tr {
+    @apply border-b border-[#E2E8F0]/40 transition-colors hover:bg-[#F5F6FD];
+  }
+}
+
+/* ===========================================================================
+   SweetAlert2 HSE Enterprise Theming
+   =========================================================================== */
+.hse-swal-toast {
+  border-radius: 12px !important;
+  padding: 8px 14px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05) !important;
+  backdrop-filter: blur(8px) !important;
+  border: 1px solid #E2E8F0 !important;
+}
+
+.hse-swal-toast-title {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  font-family: 'Almarai', sans-serif !important;
+  line-height: 1.4 !important;
+}
+
+.hse-swal-progress-bar {
+  height: 3px !important;
+  background: #212B59 !important;
+}
+
+.hse-swal-modal {
+  border-radius: 12px !important;
+  padding: 24px 24px 20px !important;
+  max-width: 500px !important;
+  border: 1px solid #E2E8F0 !important;
+  font-family: 'Almarai', sans-serif !important;
+}
+
+.hse-swal-modal-title {
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  color: #1E293B !important;
+}
+
+.hse-swal-modal-text {
+  font-size: 14px !important;
+  color: #64748B !important;
+}
+
+.hse-swal-actions {
+  gap: 8px !important;
+  margin-top: 20px !important;
+}
+
+.hse-swal-confirm-btn {
+  background-color: #212B59;
+  color: #FFFFFF;
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Almarai', sans-serif;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease-in-out;
+}
+
+.hse-swal-confirm-btn:hover {
+  background-color: #1a2247;
+}
+
+.hse-swal-cancel-btn {
+  background-color: transparent;
+  color: #64748B;
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: 'Almarai', sans-serif;
+  border: 1px solid #E2E8F0;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+.hse-swal-cancel-btn:hover {
+  background-color: #F8FAFC;
+  color: #1E293B;
+}
+
+.hse-swal-textarea {
+  background-color: #F8FAFC !important;
+  border: 1px solid #E2E8F0 !important;
+  border-radius: 8px !important;
+  font-family: 'Almarai', sans-serif !important;
+  font-size: 14px !important;
+  color: #1E293B !important;
+  padding: 10px 12px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  margin-top: 12px !important;
+}
+
+/* ===========================================================================
+   Flatpickr HSE Enterprise Theming (Light)
+   =========================================================================== */
+.flatpickr-calendar {
+  font-family: 'Almarai', sans-serif !important;
+  border-radius: 12px !important;
+  border: 1px solid #E2E8F0 !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04) !important;
+  background: #FFFFFF !important;
+  overflow: hidden;
+}
+
+.flatpickr-months {
+  background: #F8FAFC !important;
+  border-bottom: 1px solid #E2E8F0 !important;
+  padding: 4px 0 !important;
+}
+
+.flatpickr-current-month .cur-month {
+  font-weight: 700 !important;
+  color: #1E293B !important;
+}
+
+.flatpickr-current-month .numInputWrapper span {
+  display: none !important;
+}
+
+.flatpickr-current-month input.cur-year {
+  font-weight: 700 !important;
+  color: #1E293B !important;
+}
+
+.flatpickr-months .flatpickr-prev-month,
+.flatpickr-months .flatpickr-next-month {
+  fill: #64748B !important;
+  color: #64748B !important;
+}
+
+.flatpickr-months .flatpickr-prev-month:hover,
+.flatpickr-months .flatpickr-next-month:hover {
+  fill: #212B59 !important;
+  color: #212B59 !important;
+}
+
+span.flatpickr-weekday {
+  color: #64748B !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+}
+
+.flatpickr-day {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  color: #1E293B !important;
+  transition: all 0.15s ease !important;
+}
+
+.flatpickr-day:hover {
+  background: #eaf1ff !important;
+  border-color: #eaf1ff !important;
+  color: #212B59 !important;
+}
+
+.flatpickr-day.today {
+  border-color: #212B59 !important;
+  color: #212B59 !important;
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange {
+  background: #212B59 !important;
+  border-color: #212B59 !important;
+  color: #FFFFFF !important;
+}
+
+.flatpickr-day.inRange {
+  background: #eaf1ff !important;
+  border-color: #eaf1ff !important;
+  color: #212B59 !important;
+}
+
+.flatpickr-day.flatpickr-disabled,
+.flatpickr-day.prevMonthDay,
+.flatpickr-day.nextMonthDay {
+  color: #CBD5E1 !important;
+}
+
+/* RTL Flatpickr Support */
+[dir='rtl'] .flatpickr-calendar {
+  direction: rtl;
+}
+
+/* ===========================================================================
+   Tippy.js Tooltip HSE Theming
+   =========================================================================== */
+.tippy-box {
+  background-color: #0e1726;
+  color: #ffffff;
+  font-family: 'Almarai', sans-serif;
+  font-size: 12px;
+  border-radius: 6px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.tippy-box[data-placement^='top'] > .tippy-arrow::before {
+  border-top-color: #0e1726;
+}
+
+.tippy-box[data-placement^='bottom'] > .tippy-arrow::before {
+  border-bottom-color: #0e1726;
+}
+
+.tippy-box[data-placement^='left'] > .tippy-arrow::before {
+  border-left-color: #0e1726;
+}
+
+.tippy-box[data-placement^='right'] > .tippy-arrow::before {
+  border-right-color: #0e1726;
+}
