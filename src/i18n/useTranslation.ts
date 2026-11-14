@@ -8,7 +8,13 @@ interface I18nStore {
 
 export const useI18nStore = create<I18nStore>((set) => ({
   language: 'en',
-  setLanguage: (lang) => set({ language: lang }),
+  setLanguage: (lang) => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+      document.documentElement.lang = lang;
+    }
+    set({ language: lang });
+  },
 }));
 
 export function useTranslation() {

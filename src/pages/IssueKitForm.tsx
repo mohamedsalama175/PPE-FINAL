@@ -1,180 +1,288 @@
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
 import { PageHeader } from '../components/layout/PageHeader';
 import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Select } from '../components/ui/Select';
+import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
+import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
 import { useTranslation } from '../i18n/useTranslation';
+import { Briefcase, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
 
 export default function IssueKitForm() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const preselectedKitId = searchParams.get('kitId');
   const { t, language } = useTranslation();
-  const { kits, ppeItems, locations, employees, currentUser, issueItem, stockBalances } = usePPEStore();
-  
+  const { kits, ppeItems, locations, employees, currentUser, issueKit, stockBalances, issuances, batches } = usePPEStore();
+  const addToast = useToastStore(s => s.addToast);
+
   const isStoreKeeper = currentUser.role === 'Store Keeper';
   const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
 
-  const [formData, setFormData] = React.useState({
-    employeeId: employees[0]?.id || '',
-    kitId: kits[0]?.id || '',
-    locationId: myLocations[0]?.id || '',
-    quantity: 1,
-    storeKeeperSignature: '',
-    receiverSignature: ''
-  });
+  const [employeeId, setEmployeeId] = React.useState(employees[0]?.id || '');
+  const [kitId, setKitId] = React.useState(preselectedKitId || kits[0]?.id || '');
+  const [locationId, setLocationId] = React.useState(myLocations[0]?.id || '');
+  const [quantity, setQuantity] = React.useState(1);
 
-  const [issuanceError, setIssuanceError] = React.useState('');
+  // Digital signatures state
+  const [receiverSignature, setReceiverSignature] = React.useState('');
+  const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
+  const [activeSigner, setActiveSigner] = React.useState<'receiver' | 'storeKeeper' | null>(null);
 
-  const selectedKit = React.useMemo(() => kits.find(k => k.id === formData.kitId), [kits, formData.kitId]);
+  // Selected employee
+  const selectedEmployee = React.useMemo(() => employees.find(e => e.id === employeeId), [employees, employeeId]);
 
+  // PPE-035: Auto-suggest kit based on selected employee's Job Position
   React.useEffect(() => {
-    if (!selectedKit) return;
+    if (preselectedKitId) return; // Prioritize URL param if explicitly navigated
+    if (!selectedEmployee) return;
 
-    let hasError = false;
-    for (const item of selectedKit.items) {
-      const bal = stockBalances.find(b => b.ppeItemId === item.ppeItemId && b.locationId === formData.locationId);
-      if (!bal || bal.quantityOnHand < (item.qty * formData.quantity)) {
-        hasError = true;
-        break;
-      }
+    const matchedKit = kits.find(k => k.jobPositionId === selectedEmployee.jobPositionId && k.active && !k.deletedAt);
+    if (matchedKit) {
+      setKitId(matchedKit.id);
     }
+  }, [selectedEmployee, kits, preselectedKitId]);
 
-    if (hasError) {
-      setIssuanceError('Insufficient stock for one or more items in the kit at this location.');
-    } else {
-      setIssuanceError('');
-    }
-  }, [formData.locationId, formData.kitId, formData.quantity, selectedKit, stockBalances]);
+  const selectedKit = React.useMemo(() => kits.find(k => k.id === kitId), [kits, kitId]);
+
+  // Items status check for G8 partial issuance
+  const kitItemsStockStatus = React.useMemo(() => {
+    if (!selectedKit) return [];
+    return selectedKit.items.map(ki => {
+      const item = ppeItems.find(p => p.id === ki.ppeItemId);
+      const reqQty = ki.qty * quantity;
+      const bal = stockBalances.find(b => b.ppeItemId === ki.ppeItemId && b.locationId === locationId);
+      const avail = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
+      const isAvailable = avail >= reqQty;
+      const isPartial = avail > 0 && avail < reqQty;
+      const isOut = avail === 0;
+
+      // Suggest size from past issuances
+      const pastIssuance = issuances.find(i => i.employeeId === employeeId && i.ppeItemId === ki.ppeItemId && i.variantKey);
+      const suggestedSize = pastIssuance?.variantKey || ki.variantKey || '';
+
+      return {
+        ki,
+        item,
+        reqQty,
+        avail,
+        isAvailable,
+        isPartial,
+        isOut,
+        suggestedSize
+      };
+    });
+  }, [selectedKit, quantity, locationId, stockBalances, issuances, employeeId, ppeItems]);
+
+  const hasAnyStock = kitItemsStockStatus.some(k => k.avail > 0);
+  const isPartiallyAvailable = kitItemsStockStatus.some(k => k.isOut || k.isPartial);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (issuanceError) {
-      addToast('Cannot issue: ' + issuanceError, 'error');
+    if (!hasAnyStock) {
+      addToast('Cannot issue kit: all items are currently out of stock at this location.', 'error');
       return;
     }
-    if (!formData.storeKeeperSignature || !formData.receiverSignature) {
-      addToast('Both signatures are required.', 'error');
+    if (!receiverSignature || !storeKeeperSignature) {
+      addToast('Both digital signatures (Store Keeper & Receiver) are required (Rule G7).', 'error');
       return;
     }
-    
-    issueItem({
-      employeeId: formData.employeeId,
-      kitId: formData.kitId,
-      locationId: formData.locationId,
-      quantity: formData.quantity,
-      issueDate: new Date().toISOString(),
-      storeKeeperSignature: formData.storeKeeperSignature,
-      receiverSignature: formData.receiverSignature,
+
+    const res = issueKit({
+      employeeId,
+      kitId,
+      locationId,
+      quantity,
+      storeKeeperSignature,
+      receiverSignature,
       issuedBy: currentUser.id
     });
-    
-    addToast('Kit issued successfully!', 'success');
-    navigate('/issuances');
-  };
 
-  const handleSign = (type: 'storekeeper' | 'receiver') => {
-    const dummySignature = `data:image/png;base64,dummy_signature_${Date.now()}`;
-    if (type === 'storekeeper') setFormData({ ...formData, storeKeeperSignature: dummySignature });
-    else setFormData({ ...formData, receiverSignature: dummySignature });
+    if (res.success) {
+      addToast(`Kit successfully issued (${res.issuanceIds.length} items processed per Rule G8).`, 'success');
+      navigate('/issuances');
+    } else {
+      addToast('Error issuing kit.', 'error');
+    }
   };
-
-  const addToast = useToastStore(s => s.addToast);
 
   return (
-    <div className="max-w-3xl">
-      <PageHeader title="Issue Kit" />
-      
+    <div className="max-w-3xl space-y-6 pb-20">
+      <PageHeader 
+        title="Issue Standardized Job Kit (PPE-035)" 
+        subtitle="Bundled issuance with auto-suggestion by position and partial stock fulfillment (Rule G8)" 
+        onBack={() => navigate('/issuances')}
+      />
+
       <form onSubmit={handleSubmit} className="space-y-6">
-        <FormSection title="Issuance Details">
-          {issuanceError && (
-            <div className="p-3 bg-safety-red/10 text-safety-red border border-safety-red/20 rounded-md text-sm mb-4">
-              {issuanceError}
-            </div>
-          )}
+        <FormSection title="Recipient & Kit Selection">
           <div className="grid grid-cols-2 gap-4">
-            <FormGroup label="Location">
-              <Select value={formData.locationId} onChange={e => setFormData({...formData, locationId: e.target.value})}>
-                {myLocations.map(l => <option key={l.id} value={l.id}>{language === 'en' ? l.nameEn : l.nameAr}</option>)}
-              </Select>
-            </FormGroup>
-            
             <FormGroup label="Employee">
-              <Select value={formData.employeeId} onChange={e => setFormData({...formData, employeeId: e.target.value})}>
-                {employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.employeeCode})</option>)}
+              <Select value={employeeId} onChange={e => setEmployeeId(e.target.value)}>
+                {employees.filter(e => e.active).map(emp => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.employeeCode})
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
+
+            <FormGroup label="Location">
+              <Select value={locationId} onChange={e => setLocationId(e.target.value)}>
+                {myLocations.map(l => (
+                  <option key={l.id} value={l.id}>
+                    {language === 'en' ? l.nameEn : l.nameAr}
+                  </option>
+                ))}
               </Select>
             </FormGroup>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <FormGroup label="Kit">
-              <Select value={formData.kitId} onChange={e => setFormData({...formData, kitId: e.target.value})}>
-                {kits.map(k => <option key={k.id} value={k.id}>{language === 'en' ? k.nameEn : k.nameAr}</option>)}
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            <FormGroup label="Standard Kit">
+              <Select value={kitId} onChange={e => setKitId(e.target.value)}>
+                {kits.filter(k => k.active && !k.deletedAt).map(k => (
+                  <option key={k.id} value={k.id}>
+                    {language === 'en' ? k.nameEn : k.nameAr}
+                  </option>
+                ))}
               </Select>
             </FormGroup>
 
-            <FormGroup label="Quantity">
-              <Select value={formData.quantity} onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10)})}>
-                <option value={1}>1 Kit</option>
-                <option value={2}>2 Kits</option>
-                <option value={3}>3 Kits</option>
-              </Select>
+            <FormGroup label="Kit Multiplier (Quantity)">
+              <Input 
+                type="number" 
+                min="1" 
+                value={quantity} 
+                onChange={e => setQuantity(parseInt(e.target.value, 10) || 1)} 
+              />
             </FormGroup>
           </div>
+        </FormSection>
 
-          {selectedKit && (
-            <div className="mt-4 border border-border rounded-md p-4 bg-canvas">
-              <h4 className="text-sm font-bold text-ink mb-2">Kit Contents:</h4>
-              <ul className="space-y-2">
-                {selectedKit.items.map(item => {
-                  const ppe = ppeItems.find(p => p.id === item.ppeItemId);
-                  const reqQty = item.qty * formData.quantity;
-                  const bal = stockBalances.find(b => b.ppeItemId === item.ppeItemId && b.locationId === formData.locationId)?.quantityOnHand || 0;
-                  return (
-                    <li key={item.id} className="flex justify-between items-center text-sm">
-                      <span className="text-body">{ppe ? (language === 'en' ? ppe.nameEn : ppe.nameAr) : item.ppeItemId}</span>
-                      <span className={`font-medium ${bal < reqQty ? 'text-safety-red' : 'text-safety-green'}`}>
-                        {reqQty} req / {bal} avail
-                      </span>
-                    </li>
-                  )
-                })}
-              </ul>
+        {/* Kit Items Stock Status (Rule G8 Partial Fulfillment) */}
+        <FormSection 
+          title="Kit Items Stock Status & Fulfillment (Rule G8)" 
+          description="If an item is out of stock, Rule G8 allows partial fulfillment without creating an open backorder."
+        >
+          {isPartiallyAvailable && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-safety-amber-signal font-medium mb-3 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>Some items have limited stock. Partial issuance will proceed for available items only (Rule G8).</span>
             </div>
           )}
+
+          <div className="border border-border rounded overflow-hidden">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-canvas border-b border-border text-body uppercase font-bold">
+                <tr>
+                  <th className="p-2.5">Item</th>
+                  <th className="p-2.5 text-center">Req Qty</th>
+                  <th className="p-2.5 text-center">Available</th>
+                  <th className="p-2.5 text-right">Fulfillment Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {kitItemsStockStatus.map(({ ki, item, reqQty, avail, isAvailable, isPartial, isOut }) => (
+                  <tr key={ki.id} className="hover:bg-canvas/40">
+                    <td className="p-2.5">
+                      <div className="font-semibold text-ink">{item ? (language === 'en' ? item.nameEn : item.nameAr) : ki.ppeItemId}</div>
+                      <div className="text-[10px] text-body font-mono">{item?.itemCode}</div>
+                    </td>
+                    <td className="p-2.5 text-center font-bold">{reqQty}</td>
+                    <td className="p-2.5 text-center font-bold font-mono">
+                      <span className={avail > 0 ? 'text-safety-green' : 'text-safety-red'}>{avail}</span>
+                    </td>
+                    <td className="p-2.5 text-right font-medium">
+                      {isAvailable ? (
+                        <span className="text-safety-green font-bold">✓ Full Stock</span>
+                      ) : isPartial ? (
+                        <span className="text-safety-amber-signal font-bold">Partial ({avail}/{reqQty})</span>
+                      ) : (
+                        <span className="text-safety-red font-bold">Out of Stock (Skipped)</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </FormSection>
 
-        <FormSection title="Signatures">
+        {/* Digital Signatures (Rule G7: single pair covers entire kit) */}
+        <FormSection 
+          title="Dual Digital Signatures (Rule G7)" 
+          description="A single pair of captured signatures covers the entire kit issuance."
+        >
           <div className="grid grid-cols-2 gap-6">
-            <div className="border border-border rounded-md p-4 flex flex-col items-center justify-center min-h-[120px] bg-canvas">
-              <div className="text-sm font-medium mb-4">Employee Signature</div>
-              {formData.receiverSignature ? (
-                <div className="text-safety-green flex items-center gap-2 font-bold text-lg italic">
-                  ✓ Signed
+            {/* Receiver Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Receiver Signature</div>
+              {receiverSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button 
+                    type="button" 
+                    onClick={() => setActiveSigner('receiver')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
                 </div>
               ) : (
-                <Button type="button" variant="secondary" onClick={() => handleSign('receiver')}>Tap to Sign</Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('receiver')}>
+                  Tap to Sign (Receiver)
+                </Button>
               )}
             </div>
-            <div className="border border-border rounded-md p-4 flex flex-col items-center justify-center min-h-[120px] bg-canvas">
-              <div className="text-sm font-medium mb-4">Store Keeper Signature</div>
-              {formData.storeKeeperSignature ? (
-                <div className="text-safety-green flex items-center gap-2 font-bold text-lg italic">
-                  ✓ Signed
+
+            {/* Store Keeper Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Store Keeper Signature</div>
+              {storeKeeperSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button 
+                    type="button" 
+                    onClick={() => setActiveSigner('storeKeeper')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
                 </div>
               ) : (
-                <Button type="button" variant="secondary" onClick={() => handleSign('storekeeper')}>Tap to Sign</Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('storeKeeper')}>
+                  Tap to Sign (Store Keeper)
+                </Button>
               )}
             </div>
           </div>
         </FormSection>
-        
-        <div className="py-4 flex justify-end gap-3 border-t border-border mt-4">
-          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>Cancel</Button>
-          <Button type="submit" disabled={!!issuanceError}>Complete Issuance</Button>
+
+        <div className="pt-4 flex justify-end gap-3 border-t border-border">
+          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!hasAnyStock || !receiverSignature || !storeKeeperSignature}>
+            Complete Kit Issuance
+          </Button>
         </div>
       </form>
+
+      {/* Signature Capture Modal */}
+      <SignatureModal 
+        isOpen={!!activeSigner}
+        title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
+        onClose={() => setActiveSigner(null)}
+        onSave={(dataUrl) => {
+          if (activeSigner === 'receiver') setReceiverSignature(dataUrl);
+          else setStoreKeeperSignature(dataUrl);
+          setActiveSigner(null);
+        }}
+      />
     </div>
   );
 }

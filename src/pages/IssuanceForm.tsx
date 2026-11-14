@@ -1,38 +1,52 @@
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
 import { PageHeader } from '../components/layout/PageHeader';
 import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Button } from '../components/ui/Button';
+import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
 import { addDays, addMonths, addYears, format } from 'date-fns';
+import { ShieldCheck, AlertTriangle } from 'lucide-react';
 
 export default function IssuanceForm() {
   const navigate = useNavigate();
-  const { ppeItems, locations, employees, currentUser, issueItem, batches, stockBalances } = usePPEStore();
+  const [searchParams] = useSearchParams();
+  const queryEmployeeId = searchParams.get('employeeId');
+  const queryItemId = searchParams.get('itemId');
+  const queryReplacesIssuanceId = searchParams.get('replacesIssuanceId');
+
+  const { ppeItems, locations, employees, issuances, currentUser, issueItem, batches, stockBalances, validateGenderMatch } = usePPEStore();
   
   const isStoreKeeper = currentUser.role === 'Store Keeper';
   const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
   const addToast = useToastStore(s => s.addToast);
 
+  const priorIssuance = React.useMemo(() => {
+    return queryReplacesIssuanceId ? issuances.find(i => i.id === queryReplacesIssuanceId) : undefined;
+  }, [queryReplacesIssuanceId, issuances]);
+
   const [formData, setFormData] = React.useState({
-    employeeId: employees[0]?.id || '',
-    ppeItemId: ppeItems[0]?.id || '',
+    employeeId: queryEmployeeId || employees[0]?.id || '',
+    ppeItemId: queryItemId || ppeItems[0]?.id || '',
     locationId: myLocations[0]?.id || '',
     quantity: 1,
     batchNumber: '',
     variantKey: '',
+    replacesIssuanceId: queryReplacesIssuanceId || '',
     storeKeeperSignature: '',
     receiverSignature: ''
   });
 
   const [issuanceError, setIssuanceError] = React.useState('');
+  const [activeSigner, setActiveSigner] = React.useState<'receiver' | 'storeKeeper' | null>(null);
 
   const selectedItem = React.useMemo(() => ppeItems.find(p => p.id === formData.ppeItemId), [ppeItems, formData.ppeItemId]);
   const selectedEmployee = React.useMemo(() => employees.find(e => e.id === formData.employeeId), [employees, formData.employeeId]);
 
+  // FIFO Batches recommendation (Rule G14)
   const availableBatches = React.useMemo(() => {
     if (!formData.ppeItemId || !formData.locationId) return [];
     return batches
@@ -57,21 +71,28 @@ export default function IssuanceForm() {
 
   React.useEffect(() => {
     if (!selectedItem || !selectedItem.locationIds.includes(formData.locationId)) {
-      setIssuanceError('Item is not available at the selected location.');
+      setIssuanceError('Item is not configured as valid for the selected location.');
       return;
     }
 
     const bal = stockBalances.find(b => b.ppeItemId === formData.ppeItemId && b.locationId === formData.locationId);
-    if (!bal || bal.quantityOnHand < formData.quantity) {
-      setIssuanceError('No stock available for this item at this location. Please submit a Request instead.');
+    const availableOnHand = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
+    if (availableOnHand < formData.quantity) {
+      setIssuanceError(`Insufficient available stock (Available: ${availableOnHand}, Requested: ${formData.quantity}).`);
       return;
     }
 
-    // Since our Employee mock doesn't have gender, let's assume they might have gender, but since it's missing in types, we skip strict gender block, or add a warning.
-    // In our types Employee doesn't have gender. Let's just simulate the check conceptually if it existed.
+    // Rule G4: Gender Matching Validation
+    if (formData.employeeId && formData.ppeItemId) {
+      const genderCheck = validateGenderMatch(formData.employeeId, formData.ppeItemId, formData.variantKey);
+      if (!genderCheck.valid) {
+        setIssuanceError(genderCheck.reason || 'Gender mismatch violation (Rule G4).');
+        return;
+      }
+    }
     
     setIssuanceError('');
-  }, [formData.locationId, formData.ppeItemId, formData.quantity, selectedItem, stockBalances]);
+  }, [formData.locationId, formData.ppeItemId, formData.quantity, formData.employeeId, formData.variantKey, selectedItem, stockBalances, validateGenderMatch]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,79 +105,92 @@ export default function IssuanceForm() {
       return;
     }
     if (!formData.batchNumber) {
-      addToast('A valid active batch must be selected.', 'error');
+      addToast('A valid active batch must be selected (Rule G14 FIFO).', 'error');
       return;
     }
     if (!formData.storeKeeperSignature || !formData.receiverSignature) {
-      addToast('Both Store Keeper and Employee signatures are required.', 'error');
+      addToast('Both digital signatures (Store Keeper & Receiver) are mandatory.', 'error');
       return;
     }
     
-    issueItem({
+    const res = issueItem({
       employeeId: formData.employeeId,
       ppeItemId: formData.ppeItemId,
       locationId: formData.locationId,
       quantity: formData.quantity,
       batchNumber: formData.batchNumber,
       variantKey: formData.variantKey,
+      replacesIssuanceId: formData.replacesIssuanceId || undefined,
       issueDate: new Date().toISOString(),
-      expectedReplacementDate: expectedReplacementDate,
       storeKeeperSignature: formData.storeKeeperSignature,
       receiverSignature: formData.receiverSignature,
       issuedBy: currentUser.id
     });
     
-    addToast('PPE Issued successfully.', 'success');
-    navigate('/issuances');
-  };
-
-  const handleSign = (type: 'storekeeper' | 'receiver') => {
-    const dummySignature = `data:image/png;base64,dummy_signature_${Date.now()}`;
-    if (type === 'storekeeper') setFormData({ ...formData, storeKeeperSignature: dummySignature });
-    else setFormData({ ...formData, receiverSignature: dummySignature });
+    if (res.success) {
+      addToast(formData.replacesIssuanceId ? 'Replacement PPE successfully issued. Prior issuance marked Replaced (PPE-034).' : 'PPE successfully issued with digital audit signatures.', 'success');
+      navigate('/issuances');
+    }
   };
 
   return (
-    <div className="max-w-3xl">
-      <PageHeader title="Issue PPE (Single Item)" />
-      <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg px-6 py-2">
-        <FormSection title="Issuance Details">
-          {issuanceError && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-md">
-              {issuanceError}
-            </div>
-          )}
+    <div className="max-w-3xl space-y-6 pb-20">
+      <PageHeader 
+        title="Issue PPE (Single Item)" 
+        subtitle="Direct equipment assignment with FIFO batch selection, lifespan calculation, and dual signatures"
+        onBack={() => navigate('/issuances')}
+      />
+
+      {priorIssuance && (
+        <div className="p-3 bg-blue-50 border border-blue-200 text-blue-900 rounded text-xs font-semibold flex items-center justify-between">
+          <span>Replacing Active Issuance: <strong>{priorIssuance.reference || priorIssuance.id}</strong> (Prior issuance will be marked 'Replaced' and ceases to be active per PPE-034).</span>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <FormSection title="Recipient & Location">
           <div className="grid grid-cols-2 gap-4">
-            <FormGroup label="Location">
-              <Select value={formData.locationId} onChange={e => setFormData({...formData, locationId: e.target.value, batchNumber: ''})}>
-                {myLocations.map(l => <option key={l.id} value={l.id}>{l.nameEn}</option>)}
-              </Select>
-            </FormGroup>
-            
             <FormGroup label="Employee">
               <Select value={formData.employeeId} onChange={e => setFormData({...formData, employeeId: e.target.value})}>
-                {employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.employeeCode})</option>)}
+                {employees.filter(e => e.active).map(emp => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.employeeCode}) {emp.gender ? `· ${emp.gender}` : ''}
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
+
+            <FormGroup label="Issuing Location">
+              <Select value={formData.locationId} onChange={e => setFormData({...formData, locationId: e.target.value, batchNumber: ''})}>
+                {myLocations.map(l => (
+                  <option key={l.id} value={l.id}>{l.nameEn} ({l.site})</option>
+                ))}
               </Select>
             </FormGroup>
           </div>
+        </FormSection>
+
+        <FormSection title="Equipment Specifications">
+          {issuanceError && (
+            <div className="p-3 bg-red-50 border border-red-200 text-safety-red rounded text-xs font-semibold mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{issuanceError}</span>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <FormGroup label="PPE Item">
               <Select value={formData.ppeItemId} onChange={e => setFormData({...formData, ppeItemId: e.target.value, batchNumber: ''})}>
-                {ppeItems.map(p => <option key={p.id} value={p.id}>{p.nameEn} ({p.itemCode})</option>)}
+                {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
+                  <option key={p.id} value={p.id}>{p.nameEn} ({p.itemCode})</option>
+                ))}
               </Select>
-              {selectedItem && (
-                <div className="text-xs text-body mt-1">
-                  Lifespan: {selectedItem.lifespanValue} {selectedItem.lifespanType}
-                  {expectedReplacementDate && ` (Next Replacement: ${expectedReplacementDate})`}
-                </div>
-              )}
             </FormGroup>
 
             {selectedItem?.hasSize && (
-              <FormGroup label="Variant / Size">
+              <FormGroup label="Size / Variant Selection">
                 <Select value={formData.variantKey} onChange={e => setFormData({...formData, variantKey: e.target.value})} required>
-                  <option value="">Select Size...</option>
+                  <option value="">Select Size / Variant...</option>
                   {selectedItem.variantAttributeValueIds.map(val => (
                     <option key={val} value={val}>{val}</option> 
                   ))}
@@ -165,52 +199,104 @@ export default function IssuanceForm() {
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <FormGroup label="Batch (Oldest first)">
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            <FormGroup label="FIFO Recommended Batch (G14)">
               <Select value={formData.batchNumber} onChange={e => setFormData({...formData, batchNumber: e.target.value})}>
                 <option value="">Select Batch...</option>
                 {availableBatches.map(b => (
-                  <option key={b.id} value={b.batchNumber}>{b.batchNumber} (Avail: {b.availableQty})</option>
+                  <option key={b.id} value={b.batchNumber}>
+                    {b.batchNumber} (Avail: {b.availableQty}) &middot; Exp: {format(new Date(b.expiryDate), 'yyyy-MM')}
+                  </option>
                 ))}
               </Select>
             </FormGroup>
 
             <FormGroup label="Quantity">
-              <Input type="number" min="1" value={formData.quantity} onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})} />
+              <Input 
+                type="number" 
+                min="1" 
+                value={formData.quantity} 
+                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})} 
+              />
             </FormGroup>
           </div>
+
+          {expectedReplacementDate && (
+            <div className="mt-4 p-3 bg-canvas border border-border rounded flex items-center justify-between text-xs">
+              <span className="font-semibold text-body">Auto-Calculated Lifespan Replacement Due Date (Rule G5):</span>
+              <span className="font-bold text-accent font-mono text-sm">{expectedReplacementDate}</span>
+            </div>
+          )}
         </FormSection>
 
-        <FormSection title="Signatures">
+        {/* Digital Signatures Pad */}
+        <FormSection title="Dual Digital Signatures" description="Capture digital signatures for the Store Keeper and the recipient Employee.">
           <div className="grid grid-cols-2 gap-6">
-            <div className="border border-border rounded-md p-4 flex flex-col items-center justify-center min-h-[120px] bg-canvas">
-              <div className="text-sm font-medium mb-4">Employee Signature</div>
+            {/* Receiver Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Receiver Signature</div>
               {formData.receiverSignature ? (
-                <div className="text-safety-green flex items-center gap-2 font-bold text-lg italic">
-                  ✓ Signed
+                <div className="flex flex-col items-center">
+                  <img src={formData.receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button 
+                    type="button" 
+                    onClick={() => setActiveSigner('receiver')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
                 </div>
               ) : (
-                <Button type="button" variant="secondary" onClick={() => handleSign('receiver')}>Tap to Sign</Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('receiver')}>
+                  Tap to Sign (Receiver)
+                </Button>
               )}
             </div>
-            <div className="border border-border rounded-md p-4 flex flex-col items-center justify-center min-h-[120px] bg-canvas">
-              <div className="text-sm font-medium mb-4">Store Keeper Signature</div>
+
+            {/* Store Keeper Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Store Keeper Signature</div>
               {formData.storeKeeperSignature ? (
-                <div className="text-safety-green flex items-center gap-2 font-bold text-lg italic">
-                  ✓ Signed
+                <div className="flex flex-col items-center">
+                  <img src={formData.storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button 
+                    type="button" 
+                    onClick={() => setActiveSigner('storeKeeper')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
                 </div>
               ) : (
-                <Button type="button" variant="secondary" onClick={() => handleSign('storekeeper')}>Tap to Sign</Button>
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('storeKeeper')}>
+                  Tap to Sign (Store Keeper)
+                </Button>
               )}
             </div>
           </div>
         </FormSection>
         
-        <div className="py-4 flex justify-end gap-3 border-t border-border mt-4">
-          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>Cancel</Button>
-          <Button type="submit" disabled={!!issuanceError}>Complete Issuance</Button>
+        <div className="pt-4 flex justify-end gap-3 border-t border-border">
+          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!!issuanceError || !formData.receiverSignature || !formData.storeKeeperSignature}>
+            Complete Issuance
+          </Button>
         </div>
       </form>
+
+      {/* Signature Capture Modal */}
+      <SignatureModal 
+        isOpen={!!activeSigner}
+        title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
+        onClose={() => setActiveSigner(null)}
+        onSave={(dataUrl) => {
+          if (activeSigner === 'receiver') setFormData(prev => ({ ...prev, receiverSignature: dataUrl }));
+          else setFormData(prev => ({ ...prev, storeKeeperSignature: dataUrl }));
+          setActiveSigner(null);
+        }}
+      />
     </div>
-  )
+  );
 }

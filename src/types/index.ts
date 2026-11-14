@@ -6,7 +6,8 @@ export interface BaseEntity {
   deletedAt?: string | null;
 }
 
-export type LocationType = 'Central Warehouse' | 'Site Store' | 'Department Store' | 'Scrap' | 'Used' | 'General';
+export type LocationType = 'Central Warehouse' | 'Site Store' | 'Department Store' | 'General' | 'Scrap' | 'Used';
+export type StockCondition = 'New' | 'Used' | 'Scrap';
 
 export interface Location extends BaseEntity {
   code: string;
@@ -14,10 +15,12 @@ export interface Location extends BaseEntity {
   nameAr: string;
   site: string;
   locationType: LocationType;
+  stockCondition: StockCondition;
   description: string;
   capacityUnits: number;
   address: string;
   assignedStoreKeeperIds: string[];
+  openingBalanceClosed?: boolean;
 }
 
 export interface AttributeValue {
@@ -38,6 +41,7 @@ export interface ItemGroup extends BaseEntity {
   nameEn: string;
   nameAr: string;
   attributeIds: string[];
+  requiresGenderMatch?: boolean;
 }
 
 export interface PPEItem extends BaseEntity {
@@ -59,6 +63,7 @@ export interface PPEItem extends BaseEntity {
   riskCategory: 'I' | 'II' | 'III';
   reorderLevel: number;
   locationIds: string[]; // Valid locations for this item
+  locationReorderLevels?: { locationId: string; reorderLevel: number }[]; // Reorder level per location (PPE-001)
   variantAttributeValueIds: string[]; // default variants if applicable
   uom: string;
 }
@@ -87,7 +92,12 @@ export interface Employee extends BaseEntity {
   name: string;
   employeeCode: string;
   jobPositionId: string;
-  role: Role; // For mocking
+  role: Role;
+  gender?: 'Male' | 'Female';
+  status?: 'Active' | 'Terminated' | 'Transferred' | 'Inactive';
+  department?: string;
+  site?: string;
+  supervisorId?: string; // For Direct Supervisor team scoping
 }
 
 export interface StockBalance {
@@ -96,6 +106,7 @@ export interface StockBalance {
   locationId: string;
   variantKey?: string; // stringified attributes
   quantityOnHand: number;
+  quarantinedOnHand?: number;
 }
 
 export interface StockMovement {
@@ -118,21 +129,38 @@ export interface StockAdjustment {
   type: 'IN' | 'OUT';
   ppeItemId: string;
   locationId: string;
+  variantKey?: string;
   batchNumber: string;
   quantityDelta: number;
   reasonCategory: string;
   reason: string;
+  manufacturerExpiryDate?: string;
+  supplierDeliveryNote?: string;
+  destinationLocationId?: string; // Optional destination (e.g. Scrap location for damaged goods)
   status: 'pending' | 'approved' | 'rejected' | 'applied';
   submittedBy: string;
   reviewedBy?: string;
   createdAt: string;
 }
 
+export interface LoanLineItem {
+  id: string;
+  ppeItemId: string;
+  quantity: number;
+  returnedQty?: number;
+  condition?: 'good' | 'damaged' | 'worn_out' | 'lost';
+  status: 'open' | 'returned';
+}
+
 export interface Issuance {
   id: string;
+  reference?: string;
   employeeId?: string; 
-  holderName?: string; // for loan
-  holderType?: string; // for loan
+  holderName?: string; // for loan or visitor
+  holderType?: string; // 'Employee' | 'Visitor' | 'Contractor'
+  companyName?: string;
+  contactNumber?: string;
+  hostEmployeeId?: string;
   ppeItemId?: string;
   kitId?: string;
   locationId: string;
@@ -142,18 +170,26 @@ export interface Issuance {
   issueDate: string;
   expectedReturnDate?: string;
   expectedReplacementDate?: string; // Auto-calculated lifespan
+  replacesIssuanceId?: string; // PPE-034 / PPE-040 link to replaced issuance
   storeKeeperSignature?: string; // data URI
   receiverSignature?: string; // data URI
-  status: 'issued' | 'returned' | 'scrapped';
+  status: 'issued' | 'returned' | 'scrapped' | 'replaced' | 'partially_returned';
   issuedBy: string;
+  isLoan?: boolean;
+  isHistorical?: boolean;
+  lines?: LoanLineItem[];
 }
 
 export interface IssuanceReturn {
   id: string;
   issuanceId: string;
+  lineId?: string;
+  quantity?: number;
   condition: 'good' | 'damaged' | 'worn_out' | 'lost';
   physicalReceiptConfirmed?: boolean;
   autoScrapped: boolean;
+  storeKeeperSignature?: string;
+  employeeSignature?: string;
   returnedBy: string;
   returnDate: string;
 }
@@ -174,22 +210,29 @@ export interface ScrapEntry {
   createdAt: string;
 }
 
-export interface ExpirySettings {
+export interface ModuleSettings {
   generalLeadTimeDays: number;
   categoryOverrides: { riskCategory: 'I' | 'II' | 'III'; leadTimeDays: number }[];
+  recentIssuanceWindowDays: number;
+  trashRetentionDays: number;
+  siteLeadTimes: { site: string; leadTimeDays: number }[];
 }
+
+export type ExpirySettings = ModuleSettings;
 
 export interface OpeningBalanceLine {
   id: string;
   ppeItemId: string;
+  variantKey?: string;
   batchNumber: string;
-  expiryDate: string;
+  expiryDate?: string;
   quantity: number;
   costPerUnit?: number;
 }
 
 export interface OpeningBalance {
   id: string;
+  reference?: string; // ADJ-OB-YYYY-NNNNN (PPE-024)
   locationId: string;
   referenceDate: string;
   notes?: string;
@@ -208,8 +251,12 @@ export interface Batch {
   batchNumber: string;
   ppeItemId: string;
   locationId: string;
+  variantKey?: string;
   quantity: number; // original quantity
   availableQty: number; // currently available
+  quarantinedQty?: number;
+  isQuarantined?: boolean;
+  quarantineReason?: string;
   expiryDate: string;
   costPerUnit?: number;
   status: 'Active' | 'Depleted' | 'Recalled' | 'Scrapped';
@@ -219,10 +266,17 @@ export interface Batch {
 
 export interface AuditLog {
   id: string;
-  entityType: 'OpeningBalance' | 'StockAdjustment' | 'Issuance' | 'Transfer' | 'Scrap';
-  entityId: string;
+  entityType?: 'OpeningBalance' | 'StockAdjustment' | 'Issuance' | 'Transfer' | 'Scrap' | 'Catalog' | 'Attribute' | 'ItemGroup' | 'Location' | 'Kit' | 'Settings';
+  entityId?: string;
   action: string;
   details?: string;
   performedBy: string;
   timestamp: string;
+  // Enhanced G1 fields:
+  user?: string;
+  objectType?: string;
+  objectReference?: string;
+  reason?: string;
+  before?: any;
+  after?: any;
 }

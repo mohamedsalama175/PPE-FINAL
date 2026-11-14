@@ -32,6 +32,14 @@ import MyPPE from './pages/MyPPE';
 import IssueKitForm from './pages/IssueKitForm';
 import IssueLoanForm from './pages/IssueLoanForm';
 
+// New Pages (PPE-040, PPE-041, PPE-042, PPE-043, PPE-044, PPE-050)
+import ReplacementsDue from './pages/ReplacementsDue';
+import OpenLoans from './pages/OpenLoans';
+import Employees from './pages/Employees';
+import EmployeeDetail from './pages/EmployeeDetail';
+import HistoricalImport from './pages/HistoricalImport';
+import ModuleSettings from './pages/ModuleSettings';
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -65,16 +73,22 @@ export default function App() {
           <Route path="stock/opening-balances/new" element={<OpeningBalanceForm />} />
           <Route path="stock/opening-balances/:id" element={<OpeningBalanceForm />} />
           
-          <Route path="audit-logs" element={<AuditLogs />} />
-          
           <Route path="issuances" element={<Issuances />} />
           <Route path="issuances/new" element={<IssuanceForm />} />
           <Route path="issuances/new-kit" element={<IssueKitForm />} />
           <Route path="issuances/new-loan" element={<IssueLoanForm />} />
-          <Route path="issuances/open-loans" element={<Issuances openLoansOnly />} />
+          <Route path="issuances/open-loans" element={<OpenLoans />} />
+          <Route path="loans" element={<OpenLoans />} />
+          <Route path="replacements-due" element={<ReplacementsDue />} />
+
+          <Route path="employees" element={<Employees />} />
+          <Route path="employees/:id" element={<EmployeeDetail />} />
+          <Route path="import-historical" element={<HistoricalImport />} />
           
           <Route path="scrap" element={<Scrap />} />
+          <Route path="audit-logs" element={<AuditLogs />} />
           
+          <Route path="settings" element={<ModuleSettings />} />
           <Route path="settings/expiry" element={<ExpirySettings />} />
           <Route path="settings/store-keeper-assignments" element={<Locations />} />
           
