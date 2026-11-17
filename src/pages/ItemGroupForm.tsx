@@ -1,282 +1,267 @@
 import * as React from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
 import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
-import { ContainerCard } from '../components/ui/ContainerCard';
+import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { useToastStore } from '../store/toastStore';
+import { generateId } from '../lib/utils';
 import { ItemGroup } from '../types';
-import { ArrowLeft, Layers, AlertCircle, ShieldAlert } from 'lucide-react';
-import { AdminOverrideModal } from '../components/ui/AdminOverrideModal';
+import { Lock, AlertCircle, CheckSquare, Layers } from 'lucide-react';
 
 export default function ItemGroupForm() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { t } = useTranslation();
-  const { itemGroups, attributes, ppeItems, saveItemGroup, writeAuditLog, currentUser } = usePPEStore();
+  const navigate = useNavigate();
+  const { id } = useParams();
+  const { itemGroups, attributes, ppeItems, saveEntity } = usePPEStore();
   const addToast = useToastStore(s => s.addToast);
 
-  const isEditing = Boolean(id);
-  const existingGroup = isEditing ? itemGroups.find(g => g.id === id) : null;
-
-  const [formData, setFormData] = React.useState<ItemGroup>(() => {
-    if (existingGroup) return { ...existingGroup };
-    return {
-      id: '',
-      code: '',
-      nameEn: '',
-      nameAr: '',
-      assignedAttributeIds: [],
-      requiresGenderMatch: false,
-      active: true
-    };
+  const isEdit = Boolean(id);
+  const [formData, setFormData] = React.useState<Partial<ItemGroup>>({
+    code: '',
+    name: '',
+    attributeIds: [],
+    requiresGenderMatch: false,
+    active: true
   });
 
-  const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const [initialAttributeIds, setInitialAttributeIds] = React.useState<string[]>([]);
 
-  const [overrideModal, setOverrideModal] = React.useState<{
-    isOpen: boolean;
-    title: string;
-    warning: string;
-    action: (reason: string) => void;
-  }>({
-    isOpen: false,
-    title: '',
-    warning: '',
-    action: () => {}
-  });
+  React.useEffect(() => {
+    if (isEdit && id) {
+      const group = itemGroups.find(g => g.id === id);
+      if (group) {
+        setFormData(group);
+        setInitialAttributeIds(group.attributeIds || []);
+      }
+    }
+  }, [id, isEdit, itemGroups]);
 
-  // Find the global GENDER attribute
-  const genderAttr = attributes.find(a => a.code === 'GENDER');
+  // Find GENDER attribute ID
+  const genderAttr = React.useMemo(() => {
+    return attributes.find(a => a.code.toUpperCase() === 'GENDER' || a.name.toLowerCase().includes('gender'));
+  }, [attributes]);
 
-  const handleAttributeToggle = (attrId: string) => {
-    const isSelected = formData.assignedAttributeIds.includes(attrId);
+  const toggleAttribute = (attrId: string) => {
+    const currentIds = formData.attributeIds || [];
+    const isRemoving = currentIds.includes(attrId);
 
-    if (isSelected) {
-      // Unticking attribute check: check if active items in this group have values for it (BD-I453)
-      const attr = attributes.find(a => a.id === attrId);
-      const itemsInGroup = ppeItems.filter(p => p.itemGroupId === formData.id);
-
-      if (isEditing && itemsInGroup.length > 0) {
-        setOverrideModal({
-          isOpen: true,
-          title: `Untick Attribute: ${attr?.nameEn}`,
-          warning: `Catalog items in this group currently utilize "${attr?.nameEn}". Unticking it requires an Admin Override reason. It will clear those values and log the cleared values in the Audit Log (NEW-05).`,
-          action: (reason: string) => {
-            setFormData({
-              ...formData,
-              assignedAttributeIds: formData.assignedAttributeIds.filter(id => id !== attrId)
-            });
-            writeAuditLog({
-              user: currentUser.name,
-              role: currentUser.role,
-              objectType: 'ItemGroup',
-              objectReference: formData.code,
-              action: 'ATTRIBUTE_UNTICKED_VALUES_CLEARED',
-              beforeValues: { attributeId: attrId, affectedItems: itemsInGroup.map(i => i.itemCode) },
-              afterValues: { untickedAttribute: attr?.code },
-              reason,
-              source: 'Screen'
-            });
-          }
+    if (isRemoving) {
+      // PPE-014: If Admin removes an Attribute that items already have values for, prompt with item count and ask for reason
+      if (isEdit && id) {
+        const affectedItems = ppeItems.filter(p => {
+          if (p.itemGroupId !== id || !p.active || p.deletedAt) return false;
+          const attr = attributes.find(a => a.id === attrId);
+          const valIds = attr?.values.map(v => v.id) || [];
+          return p.variantAttributeValueIds?.some(v => valIds.includes(v));
         });
-        return;
+
+        if (affectedItems.length > 0) {
+          const reason = window.prompt(
+            `Removing this attribute will clear configured variant values on ${affectedItems.length} active item(s). Please enter a justification reason (minimum 10 characters):`
+          );
+          if (!reason || reason.trim().length < 10) {
+            addToast('Attribute removal cancelled. A justification reason (at least 10 characters) is required when items are affected.', 'error');
+            return;
+          }
+        }
       }
 
-      setFormData({
-        ...formData,
-        assignedAttributeIds: formData.assignedAttributeIds.filter(id => id !== attrId)
-      });
+      // If user is removing GENDER while requiresGenderMatch is ticked, alert
+      if (genderAttr && attrId === genderAttr.id && formData.requiresGenderMatch) {
+        addToast('Warning: "Requires gender match" is enabled. GENDER attribute is required when this setting is active.', 'info');
+      }
+
+      setFormData(prev => ({
+        ...prev,
+        attributeIds: (prev.attributeIds || []).filter(i => i !== attrId)
+      }));
     } else {
-      setFormData({
-        ...formData,
-        assignedAttributeIds: [...formData.assignedAttributeIds, attrId]
-      });
+      setFormData(prev => ({
+        ...prev,
+        attributeIds: [...(prev.attributeIds || []), attrId]
+      }));
     }
   };
 
   const handleGenderMatchToggle = (checked: boolean) => {
-    if (checked && genderAttr && !formData.assignedAttributeIds.includes(genderAttr.id)) {
-      // Force include GENDER attribute if Requires gender match is ticked (Rule 5 & BD-I452)
-      setFormData({
-        ...formData,
-        requiresGenderMatch: true,
-        assignedAttributeIds: [...formData.assignedAttributeIds, genderAttr.id]
-      });
-      addToast('Included the "GENDER" attribute automatically as it is required for Gender Matching.', 'info');
- } else {
- setFormData({
- ...formData,
- requiresGenderMatch: checked
- });
- }
- };
+    setFormData(prev => {
+      const currentAttrIds = prev.attributeIds || [];
+      // Auto-assign GENDER attribute if checked and not already present
+      if (checked && genderAttr && !currentAttrIds.includes(genderAttr.id)) {
+        return {
+          ...prev,
+          requiresGenderMatch: checked,
+          attributeIds: [...currentAttrIds, genderAttr.id]
+        };
+      }
+      return {
+        ...prev,
+        requiresGenderMatch: checked
+      };
+    });
+  };
 
- const validate = () => {
- const errs: Record<string, string> = {};
- if (!formData.code.trim()) errs.code = 'Item Group Code is required.';
- else {
- const duplicateCode = itemGroups.find(g => g.code.toLowerCase() === formData.code.trim().toLowerCase() && g.id !== formData.id);
- if (duplicateCode) errs.code = 'An item group with this Code already exists.';
- }
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
 
- if (!formData.nameEn.trim()) errs.nameEn = 'English Name is required.';
- if (!formData.nameAr.trim()) errs.nameAr = 'Arabic Name is required.';
+    const code = (formData.code || '').trim().toUpperCase();
+    if (!code || !formData.name?.trim()) {
+      addToast('Group Code and Name are required.', 'error');
+      return;
+    }
 
- // Rule 5: If requiresGenderMatch is true, GENDER attribute MUST be in assignedAttributeIds
- if (formData.requiresGenderMatch && genderAttr && !formData.assignedAttributeIds.includes(genderAttr.id)) {
- errs.genderMatch = 'The "GENDER" attribute must be checked when "Requires gender match" is active.';
- }
+    // Check duplicate code
+    const duplicate = itemGroups.find(g => g.code.toLowerCase() === code.toLowerCase() && g.id !== id && !g.deletedAt);
+    if (duplicate) {
+      addToast(`Item Group Code "${code}" already exists.`, 'error');
+      return;
+    }
 
- setErrors(errs);
- return Object.keys(errs).length === 0;
- };
+    // PPE-013 & PPE-014 Business Rule: Gender match without GENDER -> Save blocked
+    if (formData.requiresGenderMatch) {
+      const hasGender = genderAttr && (formData.attributeIds || []).includes(genderAttr.id);
+      if (!hasGender) {
+        addToast('Save blocked: "Requires gender match" is checked, but the GENDER Attribute is not assigned. Please assign the GENDER attribute.', 'error');
+        return;
+      }
+    }
 
- const handleSubmit = (e: React.FormEvent) => {
- e.preventDefault();
- if (!validate()) {
- addToast('Please resolve validation errors before saving.', 'error');
- return;
- }
+    saveEntity('itemGroups', {
+      ...formData,
+      code,
+      id: isEdit ? id : generateId()
+    } as ItemGroup);
 
- saveItemGroup({
- ...formData,
- code: formData.code.trim().toUpperCase()
- });
-
- addToast(isEditing ? 'Item Group updated successfully.' : 'New Item Group created.', 'success');
- navigate('/item-groups');
+    addToast(isEdit ? 'Item Group updated successfully.' : 'Item Group created successfully.', 'success');
+    navigate('/item-groups');
   };
 
   return (
-    <div className="max-w-3xl space-y-4">
-      <div className="flex items-center justify-between pb-2">
-        <Button variant="outline" color="secondary" size="sm" onClick={() => navigate('/item-groups')}>
-          <ArrowLeft className="w-3.5 h-3.5 me-1 rtl:rotate-180" /> Back to Item Groups
-        </Button>
-      </div>
-
-      <PageHeader
-        title={isEditing ? `Edit Item Group: ${formData.code}` : 'Add New Item Group (BD-I452)'}
-        subtitle="Configure group codes, assign dynamic attributes, and set mandatory gender match rules (Rule 5)"
+    <div className="max-w-3xl pb-16">
+      <PageHeader 
+        title={isEdit ? `Edit Item Group: ${formData.code}` : 'Add New Item Group (PPE-013)'} 
+        subtitle="Group PPE items (e.g. Helmets, Gloves, Clothing) and assign applicable variant attributes"
+        onBack={() => navigate('/item-groups')}
       />
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <ContainerCard title="Group Identification">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Input
-              label="Group Code"
-              required
-              value={formData.code}
-              onChange={e => setFormData({ ...formData, code: e.target.value.toUpperCase().replace(/\s/g, '') })}
-              placeholder="e.g. HELMETS, FOOTWEAR"
-              error={errors.code}
-              className="font-mono font-bold uppercase"
-            />
-
-            <Input
-              label="Name (English)"
-              required
-              value={formData.nameEn}
-              onChange={e => setFormData({ ...formData, nameEn: e.target.value })}
-              placeholder="e.g. Safety Footwear"
-              error={errors.nameEn}
-            />
-
-            <Input
-              label="Name (Arabic)"
-              required
-              dir="rtl"
-              value={formData.nameAr}
-              onChange={e => setFormData({ ...formData, nameAr: e.target.value })}
-              placeholder="مثال: أحذية السلامة"
-              error={errors.nameAr}
-              className="font-arabic"
-            />
+      <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg px-6 py-4 space-y-6">
+        <FormSection title="Identity" description="Unique group identifier and bilingual names">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <FormGroup label="Group Code">
+              <div className="relative">
+                <Input 
+                  value={formData.code} 
+                  onChange={e => setFormData({...formData, code: e.target.value.toUpperCase()})} 
+                  className={`font-mono uppercase ${isEdit ? 'bg-canvas text-body cursor-not-allowed pr-8' : ''}`}
+                  placeholder="e.g. GLOVES, HELMETS, CLOTHING"
+                  disabled={isEdit}
+                  required 
+                />
+                {isEdit && (
+                  <div className="absolute right-2.5 top-2.5 text-body" title="Group code cannot be changed once created (PPE-014)">
+                    <Lock className="w-4 h-4 text-safety-amber-signal" />
+                  </div>
+                )}
+              </div>
+              {isEdit && (
+                <p className="text-[11px] text-body mt-1 flex items-center gap-1">
+                  <Lock className="w-3 h-3 text-safety-amber-signal" /> Code cannot be modified after creation (Rule PPE-014)
+                </p>
+              )}
+            </FormGroup>
           </div>
-        </ContainerCard>
 
-        {/* Assigned Attributes Checklist (Rule 5) */}
-        <ContainerCard
-          title="Assigned Attributes (Rule 5)"
-          subtitle="Equipment belonging to this group will dynamically generate variants from the checked attributes."
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <FormGroup label="Name">
+              <Input 
+                value={formData.name} 
+                onChange={e => setFormData({...formData, name: e.target.value})} 
+                placeholder="e.g. Gloves"
+                required 
+              />
+            </FormGroup>
+          </div>
+        </FormSection>
+
+        {/* Assigned Attributes & Gender Matching Rule (Rule G4 & PPE-013) */}
+        <FormSection 
+          title="Assigned Variant Attributes" 
+          description="Items belonging to this group will inherit these variant pickers (e.g. Size, Color, Gender)."
         >
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-            {attributes.filter(a => a.active).map(attr => {
-              const isChecked = formData.assignedAttributeIds.includes(attr.id);
+          <div className="p-4 bg-canvas/60 border border-border rounded-lg mb-4 space-y-2">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input 
+                type="checkbox" 
+                className="mt-0.5" 
+                checked={!!formData.requiresGenderMatch} 
+                onChange={e => handleGenderMatchToggle(e.target.checked)} 
+              />
+              <div>
+                <span className="block text-sm font-bold text-ink">Requires Gender Match (Rule G4)</span>
+                <span className="block text-xs text-body">
+                  For clothing and footwear groups. When enabled, issued items must match the recipient employee's gender (or be Unisex). The GENDER attribute is automatically required.
+                </span>
+              </div>
+            </label>
+          </div>
+
+          <p className="text-xs font-bold text-body uppercase tracking-wider mb-2">
+            Select Attributes Available for this Group:
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {attributes.filter(a => a.active && !a.deletedAt).map(attr => {
+              const isChecked = (formData.attributeIds || []).includes(attr.id);
+              const isGender = genderAttr && attr.id === genderAttr.id;
+              const isRequiredGender = formData.requiresGenderMatch && isGender;
 
               return (
-                <div
-                  key={attr.id}
-                  onClick={() => handleAttributeToggle(attr.id)}
-                  className={`p-3 rounded-xl border transition-colors cursor-pointer flex items-center justify-between ${
-                    isChecked 
-                      ? 'bg-primary-light/40 border-primary/50' 
-                      : 'bg-slate-50 border-[#E2E8F0] hover:border-slate-300 '
+                <label 
+                  key={attr.id} 
+                  className={`flex items-start p-3 border rounded-lg cursor-pointer transition-colors ${
+                    isChecked ? 'bg-accent/10 border-accent/40 shadow-xs' : 'bg-surface border-border hover:bg-canvas'
                   }`}
                 >
-                  <div>
-                    <span className="font-bold text-xs text-slate-900 block">{attr.nameEn}</span>
-                    <span className="text-[10px] text-slate-500 font-mono">Code: {attr.code}</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => {}} // handled by parent div
-                    className="rounded text-primary focus:ring-primary cursor-pointer pointer-events-none"
+                  <input 
+                    type="checkbox" 
+                    className="mr-3 mt-1" 
+                    checked={isChecked} 
+                    disabled={isRequiredGender}
+                    onChange={() => toggleAttribute(attr.id)} 
                   />
-                </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-bold text-ink">{attr.name}</span>
+                      {isRequiredGender && (
+                        <span className="text-[10px] font-bold text-safety-amber-signal uppercase">Required</span>
+                      )}
+                    </div>
+                    <span className="text-xs text-body">{attr.code} &middot; {attr.values.length} value(s) ({attr.values.map(v => v.value).slice(0, 3).join(', ')}{attr.values.length > 3 ? '...' : ''})</span>
+                  </div>
+                </label>
               );
             })}
           </div>
-        </ContainerCard>
 
-        {/* Gender Match Requirement (Rule 5 & BD-I452) */}
-        <ContainerCard title="Gender Matching Rule (Rule 5)">
-          <div className="p-4 bg-amber-50/60 border border-amber-200 rounded-xl flex items-start gap-3">
-            <input
-              type="checkbox"
-              id="genderMatchCheckbox"
-              checked={formData.requiresGenderMatch}
-              onChange={e => handleGenderMatchToggle(e.target.checked)}
-              className="mt-1 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
-            />
-            <div className="space-y-1">
-              <label htmlFor="genderMatchCheckbox" className="font-bold text-xs text-amber-950 cursor-pointer">
-                Requires Gender Match
-              </label>
-              <p className="text-xs text-amber-900 leading-relaxed">
-                If ticked, the system forces inclusion of the <strong>GENDER</strong> attribute in this Item Group. 
-                At Single Issuance (BD-I467) or Kit Issuance (BD-I468), the variant's Gender MUST equal the employee's gender OR be 'Unisex'; otherwise issuance is strictly blocked.
-              </p>
-            </div>
-          </div>
-          {errors.genderMatch && <p className="text-xs text-danger font-bold mt-2">{errors.genderMatch}</p>}
-        </ContainerCard>
+          {attributes.length === 0 && (
+            <p className="text-xs text-body italic p-3 bg-canvas rounded border border-border">
+              No active attributes found. Create attributes first under Attributes Management.
+            </p>
+          )}
+        </FormSection>
 
-        <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#E2E8F0] ">
-          <Button type="button" variant="outline" color="secondary" onClick={() => navigate('/item-groups')}>
+        <div className="py-4 flex justify-end gap-3 border-t border-border mt-6">
+          <Button type="button" variant="ghost" onClick={() => navigate('/item-groups')}>
             Cancel
           </Button>
           <Button type="submit">
-            {isEditing ? 'Save Item Group' : 'Create Item Group'}
+            {isEdit ? 'Update Item Group' : 'Save Item Group'}
           </Button>
         </div>
       </form>
-
-      {/* Admin Override Modal */}
-      <AdminOverrideModal
-        isOpen={overrideModal.isOpen}
-        title={overrideModal.title}
-        warningMessage={overrideModal.warning}
-        onConfirm={(reason) => {
-          overrideModal.action(reason);
-          setOverrideModal({ isOpen: false, title: '', warning: '', action: () => {} });
-        }}
-        onCancel={() => setOverrideModal({ isOpen: false, title: '', warning: '', action: () => {} })}
-      />
     </div>
   );
 }

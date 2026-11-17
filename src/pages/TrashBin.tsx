@@ -1,339 +1,176 @@
 import * as React from 'react';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
 import { DataTable } from '../components/ui/DataTable';
-import { FilterBar } from '../components/ui/FilterBar';
-import { SearchInput } from '../components/ui/SearchInput';
-import { Select } from '../components/ui/Select';
 import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
-import { StatusBadge } from '../components/ui/StatusBadge';
 import { EmptyState } from '../components/ui/EmptyState';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { Modal } from '../components/ui/Modal';
-import { useSwal } from '../lib/useSwal';
-import { 
-  Trash2, RotateCcw, ShieldAlert, AlertTriangle, 
-  Clock, CheckCircle2, History, AlertOctagon 
-} from 'lucide-react';
-import { format } from 'date-fns';
-import { TrashItem } from '../types';
+import { useToastStore } from '../store/toastStore';
+import { Trash2, RotateCcw, AlertOctagon, ShieldCheck, Clock } from 'lucide-react';
+import { format, differenceInDays } from 'date-fns';
+import { Select } from '../components/ui/Select';
+import { Input } from '../components/ui/Input';
+import { TrashableCollection } from '../store/useStore';
 
 export default function TrashBin() {
-  const { t, language } = useTranslation();
-  const { showConfirm, showToast } = useSwal();
+  const store = usePPEStore();
+  const addToast = useToastStore(s => s.addToast);
+  const retentionPeriodDays = store.moduleSettings.trashRetentionDays || 90;
 
-  const { 
-    trashItems, 
-    restoreTrashItem, 
-    settings, 
-    currentUser 
-  } = usePPEStore();
+  // Aggregate all soft-deleted entities
+  const deletedEntities = React.useMemo(() => {
+    const arr: {
+      type: string;
+      storeKey: TrashableCollection;
+      id: string;
+      name: string;
+      label: string;
+      deletedAt: string;
+      daysRemaining: number;
+      hasHistory: boolean;
+    }[] = [];
 
-  const [typeFilter, setTypeFilter] = React.useState<string>('all');
-  const [search, setSearch] = React.useState('');
-  const [selectedTrashIds, setSelectedTrashIds] = React.useState<string[]>([]);
+    const types = [
+      { key: 'ppeItems' as const, label: 'PPE Item', nameField: 'itemCode' },
+      { key: 'attributes' as const, label: 'Attribute', nameField: 'code' },
+      { key: 'itemGroups' as const, label: 'Item Group', nameField: 'code' },
+      { key: 'locations' as const, label: 'Location', nameField: 'code' },
+      { key: 'kits' as const, label: 'Kit', nameField: 'name' },
+      { key: 'units' as const, label: 'Unit of Measure', nameField: 'code' },
+    ];
 
-  // Code conflict modal state
-  const [conflictModal, setConflictModal] = React.useState<{
-    isOpen: boolean;
-    item: TrashItem | null;
-    newCode: string;
-    errorMessage?: string;
-  }>({
-    isOpen: false,
-    item: null,
-    newCode: ''
-  });
+    types.forEach(t => {
+      const list = store[t.key] as any[];
+      if (Array.isArray(list)) {
+        list.forEach(item => {
+          if (item.deletedAt) {
+            const ageDays = differenceInDays(new Date(), new Date(item.deletedAt));
+            const daysRemaining = Math.max(0, retentionPeriodDays - ageDays);
 
-  const retentionDays = settings.trashRetentionDays || 90;
+            // Check history protection (Rule G10)
+            let hasHistory = false;
+            if (t.key === 'ppeItems') {
+              // includes serial history, which is never removed (PPE-059)
+              hasHistory = store.itemHasTransactions(item.id);
+            } else if (t.key === 'locations') {
+              hasHistory = store.stockMovements.some(m => m.locationId === item.id || m.toLocationId === item.id) || store.issuances.some(i => i.locationId === item.id);
+            } else if (t.key === 'kits') {
+              hasHistory = store.issuances.some(i => i.kitId === item.id);
+            }
 
-  const filteredTrash = React.useMemo(() => {
-    return trashItems
-      .filter(item => {
-        if (typeFilter !== 'all' && item.entityType !== typeFilter) return false;
-        if (search.trim()) {
-          const q = search.toLowerCase();
-          const matchCode = item.code.toLowerCase().includes(q);
-          const matchName = item.nameEn.toLowerCase().includes(q) || item.nameAr.toLowerCase().includes(q);
-          if (!matchCode && !matchName) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
-  }, [trashItems, typeFilter, search]);
-
-  const handleRestoreClick = async (item: TrashItem) => {
-    const confirmed = await showConfirm(
-      'Restore Record',
-      `Are you sure you want to restore "${item.nameEn}"?`,
-      'Restore',
-      false
-    );
-    if (!confirmed) return;
-
-    const result = restoreTrashItem(item.id);
-    if (!result.success) {
-      if (result.error?.includes('already in use')) {
-        // Prompt for new code
-        setConflictModal({
-          isOpen: true,
-          item,
-          newCode: `${item.code}_RESTORED`,
-          errorMessage: result.error
+            arr.push({
+              type: t.label,
+              storeKey: t.key,
+              id: item.id,
+              name: item[t.nameField] || 'Unknown',
+              label: item.name || '',
+              deletedAt: item.deletedAt,
+              daysRemaining,
+              hasHistory
+            });
+          }
         });
-      } else {
-        showToast(result.error || 'Restore blocked.', 'error');
-      }
-    } else {
-      showToast(`Restored "${item.nameEn}" successfully.`, 'success');
-      setSelectedTrashIds(prev => prev.filter(id => id !== item.id));
-    }
-  };
-
-  const handleConfirmConflictRestore = () => {
-    if (!conflictModal.item || !conflictModal.newCode.trim()) return;
-
-    const result = restoreTrashItem(conflictModal.item.id, conflictModal.newCode.trim());
-    if (!result.success) {
-      setConflictModal(prev => ({ ...prev, errorMessage: result.error }));
-    } else {
-      showToast(`Restored "${conflictModal.item.nameEn}" with remapped code "${conflictModal.newCode}".`, 'success');
-      setConflictModal({ isOpen: false, item: null, newCode: '' });
-      setSelectedTrashIds(prev => prev.filter(id => id !== conflictModal.item!.id));
-    }
-  };
-
-  const handleBulkRestore = async () => {
-    const confirmed = await showConfirm(
-      'Bulk Restore Records',
-      `Are you sure you want to restore ${selectedTrashIds.length} records?`,
-      'Restore All',
-      false
-    );
-    if (!confirmed) return;
-
-    let successCount = 0;
-    const failedItems: string[] = [];
-
-    selectedTrashIds.forEach(id => {
-      const item = trashItems.find(t => t.id === id);
-      if (item) {
-        const res = restoreTrashItem(id);
-        if (res.success) {
-          successCount++;
-        } else {
-          failedItems.push(`${item.nameEn} (${res.error})`);
-        }
       }
     });
 
-    if (successCount > 0) {
-      showToast(`Bulk restored ${successCount} record(s).`, 'success');
-      setSelectedTrashIds([]);
+    return arr.sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
+  }, [store, retentionPeriodDays]);
+
+  const [typeFilter, setTypeFilter] = React.useState('');
+  const [search, setSearch] = React.useState('');
+  const shown = deletedEntities.filter(e =>
+    (!typeFilter || e.storeKey === typeFilter) &&
+    (!search || `${e.name} ${e.label}`.toLowerCase().includes(search.toLowerCase())));
+
+  const handleRestore = (storeKey: TrashableCollection, id: string) => {
+    let res = store.restoreEntity(storeKey, id);
+    // PPE-048 / PPE-055: when the code is taken the Admin gives a new code before restoring
+    while (!res.success && res.codeTaken) {
+      const newCode = window.prompt(`${res.message}\n\nNew code:`);
+      if (!newCode) return;
+      res = store.restoreEntity(storeKey, id, newCode.trim());
     }
-    if (failedItems.length > 0) {
-      showToast(`Could not restore ${failedItems.length} record(s): ${failedItems[0]}`, 'error');
+    if (!res.success) {
+      addToast(res.message || 'Cannot restore entity: dependency missing.', 'error');
+    } else {
+      addToast(storeKey === 'units' ? 'Unit restored as Inactive. Turn it on in Units of Measure.' : 'Item restored successfully from Trash Bin.', 'success');
     }
   };
 
+  const handlePurgeSingle = (storeKey: TrashableCollection, id: string) => {
+    if (!window.confirm('Permanently delete this record? This action cannot be undone.')) return;
+    const res = store.purgeEntity(storeKey, id);
+    if (!res.success) {
+      addToast(res.message || 'Cannot purge record.', 'error');
+    } else {
+      addToast('Record permanently purged.', 'success');
+    }
+  };
+
+  const handlePurgeEligible = () => {
+    if (!window.confirm(`Auto-purge all clean records that have exceeded the ${retentionPeriodDays}-day retention period? (Historical records will remain safe per Rule G10).`)) return;
+    const res = store.purgeEligibleTrash();
+    addToast(`Purged ${res.purgedCount} clean record(s) older than ${retentionPeriodDays} days.`, 'success');
+  };
+
   return (
-    <div className="space-y-4">
+    <div>
       <PageHeader
-        title="Trash Bin & Restore Engine (NEW-04)"
-        subtitle="Shared trash across Items, Attributes, Item Groups, Locations, and Kits with historical retention rules and parent validation"
-        action={
-          selectedTrashIds.length > 0 ? (
-            <Button variant="primary" size="sm" onClick={handleBulkRestore}>
-              <RotateCcw className="w-4 h-4 me-1.5" /> Bulk Restore ({selectedTrashIds.length})
-            </Button>
-          ) : undefined
+        title="Trash Bin & Data Retention (PPE-048)"
+        subtitle={`Soft-deleted records with 90-day retention countdown and Rule G10 historical protection`}
+        actions={
+          <Button variant="danger" size="sm" onClick={handlePurgeEligible}>
+            <Trash2 className="w-4 h-4 mr-2" /> Auto-Purge Clean Records
+          </Button>
         }
       />
 
-      <FilterBar>
-        <div className="flex flex-wrap items-center gap-3">
-          <SearchInput
-            placeholder="Search code or name..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-72 text-xs"
-          />
+      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+        <Select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="sm:w-56" aria-label="Type">
+          <option value="">All types</option>
+          <option value="ppeItems">Items</option>
+          <option value="attributes">Attributes</option>
+          <option value="itemGroups">Item Groups</option>
+          <option value="locations">Locations</option>
+          <option value="kits">Kits</option>
+          <option value="units">Units of Measure</option>
+        </Select>
+        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search code or name..." className="sm:w-64" aria-label="Search" />
+      </div>
 
-          <Select
-            value={typeFilter}
-            onChange={e => setTypeFilter(e.target.value)}
-            className="w-48 text-xs"
-          >
-            <option value="all">All Entity Types</option>
-            <option value="Item">PPE Items</option>
-            <option value="Attribute">Attributes</option>
-            <option value="ItemGroup">Item Groups</option>
-            <option value="Location">Locations</option>
-            <option value="Kit">Job Kits</option>
-          </Select>
-        </div>
-      </FilterBar>
-
-      <ContainerCard noPadding className="overflow-hidden">
-        <DataTable
-          data={filteredTrash}
-          keyExtractor={item => item.id}
-          emptyState={<EmptyState icon={<Trash2 />} title="Trash Bin is empty" description="No deleted records currently pending restore or retention." />}
-          columns={[
-            {
-              key: 'checkbox',
-              header: '',
-              className: 'w-8',
-              render: item => (
-                <input
-                  type="checkbox"
-                  checked={selectedTrashIds.includes(item.id)}
-                  onChange={e => {
-                    if (e.target.checked) {
-                      setSelectedTrashIds(prev => [...prev, item.id]);
-                    } else {
-                      setSelectedTrashIds(prev => prev.filter(id => id !== item.id));
-                    }
-                  }}
-                  className="rounded border-slate-300 text-primary"
-                />
-              )
-            },
-            {
-              key: 'type',
-              header: 'Entity Type',
-              render: item => (
-                <span className="font-semibold text-slate-800 text-xs px-2 py-0.5 rounded bg-slate-100 border border-slate-200 ">
-                  {item.entityType}
-                </span>
-              )
-            },
-            {
-              key: 'code',
-              header: 'Identifier',
-              render: item => (
-                <div>
-                  <span className="font-mono text-xs font-bold text-slate-900 ">{item.code}</span>
-                  <div className="text-[11px] text-slate-500 ">{item.nameEn}</div>
-                </div>
-              )
-            },
-            {
-              key: 'deletedAt',
-              header: 'Deleted Date & By',
-              render: item => (
-                <div className="text-xs">
-                  <div className="font-medium text-slate-800 ">{format(new Date(item.deletedAt), 'MMM d, yyyy')}</div>
-                  <div className="text-[10px] text-slate-400 ">By {item.deletedBy}</div>
-                </div>
-              )
-            },
-            {
-              key: 'reason',
-              header: 'Deletion Reason',
-              render: item => (
-                <div className="max-w-[200px] text-xs text-slate-600 truncate" title={item.reason}>
-                  {item.reason}
-                </div>
-              )
-            },
-            {
-              key: 'retention',
-              header: 'Retention & Countdown',
-              render: item => {
-                if (item.hasHistory) {
-                  return (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200 ">
-                      <History className="w-3 h-3" /> Retained — has history
-                    </span>
-                  );
-                }
-
-                const daysLeft = Math.max(0, retentionDays - item.daysInTrash);
-                const isUrgent = daysLeft <= 7;
-
-                return (
-                  <div className="text-xs">
-                    <span
-                      className={`font-mono font-bold ${
-                        isUrgent ? 'text-red-600 bg-red-50 px-1.5 py-0.5 rounded border border-red-200 ' : 'text-slate-700 '
-                      }`}
-                    >
-                      {daysLeft} days left
-                    </span>
-                    <div className="text-[10px] text-slate-400 ">Auto-purge at 0</div>
-                  </div>
-                );
-              }
-            },
-            {
-              key: 'actions',
-              header: '',
-              className: 'text-end',
-              render: item => (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleRestoreClick(item)}
-                >
-                  <RotateCcw className="w-3.5 h-3.5 me-1 text-primary" /> Restore
+      <DataTable
+        data={shown}
+        keyExtractor={(item) => item.id}
+        emptyState={<EmptyState icon={<Trash2 />} title="Trash is empty" description="No soft-deleted records found." />}
+        columns={[
+          { key: 'type', header: 'Entity Type', className: 'w-36 font-semibold', render: (item) => item.type },
+          { key: 'name', header: 'Identifier', render: (item) => <span className="font-mono text-xs font-bold text-ink">{item.name}</span> },
+          { key: 'label', header: 'Name', render: (item) => <span className="text-xs">{item.label}</span> },
+          { key: 'deletedAt', header: 'Deleted Date', render: (item) => format(new Date(item.deletedAt), 'yyyy-MM-dd HH:mm') },
+          { key: 'retention', header: 'Retention Policy (G10)', render: (item) => (
+            item.hasHistory ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-safety-green bg-green-50 border border-green-200 px-2 py-0.5 rounded">
+                <ShieldCheck className="w-3.5 h-3.5" /> Retained - has history
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-body bg-canvas border border-border px-2 py-0.5 rounded">
+                <Clock className={`w-3.5 h-3.5${item.daysRemaining < 7 ? ' text-safety-red' : ''}`} /> <span className={item.daysRemaining < 7 ? 'text-safety-red font-bold' : ''}>{item.daysRemaining} days left</span>
+              </span>
+            )
+          )},
+          { key: 'actions', header: '', className: 'text-right w-44', render: (item) => (
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={() => handleRestore(item.storeKey, item.id)}>
+                <RotateCcw className="w-3.5 h-3.5 mr-1" /> Restore
+              </Button>
+              {!item.hasHistory && (
+                <Button variant="ghost" size="sm" className="text-safety-red hover:bg-safety-red/10" onClick={() => handlePurgeSingle(item.storeKey, item.id)}>
+                  Purge
                 </Button>
-              )
-            }
-          ]}
-        />
-      </ContainerCard>
-
-      {/* Duplicate Code Conflict Resolution Modal */}
-      {conflictModal.isOpen && conflictModal.item && (
-        <Modal
-          opened={conflictModal.isOpen}
-          onClose={() => setConflictModal({ isOpen: false, item: null, newCode: '' })}
-          title="Code Already In Use"
-          icon={<AlertTriangle className="w-5 h-5 text-amber-500" />}
-        >
-          <div className="space-y-4">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              The original code <span className="font-mono font-bold text-slate-800 ">"{conflictModal.item.code}"</span> has since been taken by an active record. Enter a unique new code to complete the restore:
-            </p>
-
-            {conflictModal.errorMessage && (
-              <div className="p-2.5 bg-red-50 border border-red-200 rounded text-xs text-red-700 ">
-                {conflictModal.errorMessage}
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                New Unique Code <span className="text-red-500">*</span>
-              </label>
-              <Input
-                value={conflictModal.newCode}
-                onChange={e => setConflictModal(prev => ({ ...prev, newCode: e.target.value.toUpperCase().replace(/\s+/g, '_') }))}
-                placeholder="e.g. HLM-001_NEW"
-                required
-              />
+              )}
             </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="secondary"
-                onClick={() => setConflictModal({ isOpen: false, item: null, newCode: '' })}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                onClick={handleConfirmConflictRestore}
-              >
-                Confirm & Restore
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
+          )}
+        ]}
+      />
     </div>
   );
 }

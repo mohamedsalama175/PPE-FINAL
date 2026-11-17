@@ -1,831 +1,622 @@
 import * as React from 'react';
 import { usePPEStore } from '../store/useStore';
 import { useTranslation } from '../i18n/useTranslation';
-import { 
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, 
-  Legend, ResponsiveContainer, Brush, CartesianGrid, Cell
-} from 'recharts';
-import { 
-  TrendingUp, Warehouse, Briefcase, Filter, X, 
-  AlertTriangle, ShieldAlert, CheckCircle2, ChevronRight, ChevronLeft,
-  AlertOctagon, Check, Play, Eye, Plus, ShieldCheck, Clock,
-  Users, Activity, Calendar, RefreshCw
-} from 'lucide-react';
 import { Button } from '../components/ui/Button';
-import { Select } from '../components/ui/Select';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { KpiCard } from '../components/ui/KpiCard';
+import { PageHeader } from '../components/layout/PageHeader';
+import { DataTable } from '../components/ui/DataTable';
 import { StatusBadge } from '../components/ui/StatusBadge';
-import { useSwal } from '../lib/useSwal';
-import { IssueKitModal } from '../components/dashboard/IssueKitModal';
-import { format, subDays, isAfter } from 'date-fns';
+import { Link, useNavigate } from 'react-router-dom';
+import { 
+  PackageX, PackageMinus, Clock, AlertTriangle, ClipboardList, 
+  PackageSearch, TrendingUp, BarChart3, Briefcase, Layers, ArrowRight, CheckCircle2 
+} from 'lucide-react';
+import { format, subDays, isWithinInterval, startOfDay, endOfDay } from 'date-fns';
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { showInfo } = useSwal();
-  const { 
-    currentUser, 
-    locations, 
-    batches, 
-    ppeItems, 
-    kits, 
-    issuances, 
-    issuanceReturns, 
-    visitorLoans,
-    stockAdjustments,
-    employees
-  } = usePPEStore();
+  const { currentUser, stockBalances, ppeItems, stockAdjustments, issuances, issuanceReturns, scrapEntries, batches, locations, kits, getUnitSymbol, units } = usePPEStore();
 
-  const [activeTab, setActiveTab] = React.useState<'movement' | 'capacity' | 'issuance'>('movement');
+  const [activeTab, setActiveTab] = React.useState<'overview' | 'movements' | 'capacity' | 'kits'>('overview');
+  
+  // Tab 1 (PPE-045) Controls
+  const [movementDays, setMovementDays] = React.useState<30 | 90>(30);
+  const [visibleLayers, setVisibleLayers] = React.useState({ issued: true, returned: true, scrapped: true });
 
-  // ==========================================
-  // TAB 1: Stock Movement Trend (BD-I490)
-  // ==========================================
-  const [movementDateRange, setMovementDateRange] = React.useState<'30' | '90' | 'custom'>('30');
-  const [movementSiteFilter, setMovementSiteFilter] = React.useState<string>('all');
-  const [hiddenSeries, setHiddenSeries] = React.useState<Record<string, boolean>>({
-    issued: false,
-    returned: false,
-    scrapped: false
-  });
-  const [zoomKey, setZoomKey] = React.useState<number>(0);
+  // Tab 2 (PPE-046) Controls
+  const [selectedLocationId, setSelectedLocationId] = React.useState<string | null>(null);
 
-  // Generate day-by-day time series data
-  const movementChartData = React.useMemo(() => {
-    const daysCount = movementDateRange === '90' ? 90 : 30;
-    const dataPoints: { date: string; displayDate: string; issued: number; returned: number; scrapped: number }[] = [];
-    const now = new Date();
+  // Store Keeper location scoping
+  const isStoreKeeper = currentUser.role === 'Store Keeper';
+  const myLocations = React.useMemo(() => {
+    return isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)).map(l => l.id) : locations.map(l => l.id);
+  }, [currentUser.id, isStoreKeeper, locations]);
 
-    for (let i = daysCount - 1; i >= 0; i--) {
-      const d = subDays(now, i);
-      const dateStr = format(d, 'yyyy-MM-dd');
-      const displayDate = format(d, 'MMM dd');
+  const scopedBalances = stockBalances.filter(b => myLocations.includes(b.locationId));
+  const scopedAdjustments = stockAdjustments.filter(a => myLocations.includes(a.locationId));
+  const scopedIssuances = issuances.filter(i => myLocations.includes(i.locationId));
 
-      // Filter issuances on this day
-      let dayIssued = issuances.filter(iss => {
-        if (!iss.issueDate.startsWith(dateStr)) return false;
-        if (movementSiteFilter !== 'all') {
-          const loc = locations.find(l => l.id === iss.locationId);
-          if (loc?.site !== movementSiteFilter) return false;
+  const totalValuation = React.useMemo(() => {
+    const scopedBatches = batches.filter(b => myLocations.includes(b.locationId) && b.status !== 'Scrapped');
+    return scopedBatches.reduce((sum, b) => sum + (b.availableQty * (b.costPerUnit || 0)), 0);
+  }, [batches, myLocations]);
+
+  const lowStockAlerts = React.useMemo(() => {
+    return ppeItems.flatMap(item => {
+      return locations.filter(l => myLocations.includes(l.id)).map(loc => {
+        if (!item.locationIds.includes(loc.id)) return null;
+        const bal = stockBalances.find(b => b.ppeItemId === item.id && b.locationId === loc.id);
+        const qty = bal ? bal.quantityOnHand : 0;
+        
+        if (qty <= item.reorderLevel) {
+          return { item, location: loc, qty, reorderLevel: item.reorderLevel };
         }
-        return true;
-      }).reduce((acc, curr) => acc + curr.quantity, 0);
+        return null;
+      }).filter(Boolean) as { item: any; location: any; qty: number; reorderLevel: number }[];
+    });
+  }, [ppeItems, locations, stockBalances, myLocations]);
 
-      // Filter returns on this day
-      let dayReturned = issuanceReturns.filter(ret => {
-        if (!ret.returnDate.startsWith(dateStr)) return false;
-        if (movementSiteFilter !== 'all') {
-          const loc = locations.find(l => l.id === ret.returnedToLocationId);
-          if (loc?.site !== movementSiteFilter) return false;
-        }
-        return ret.condition === 'good';
-      }).reduce((acc, curr) => acc + curr.quantityReturned, 0);
+  const outOfStockCount = scopedBalances.filter(b => b.quantityOnHand === 0).length;
+  const lowStockCount = scopedBalances.filter(b => {
+    if (b.quantityOnHand === 0) return false;
+    const item = ppeItems.find(i => i.id === b.ppeItemId);
+    return item && b.quantityOnHand <= item.reorderLevel;
+  }).length;
 
-      // Filter scrapped on this day
-      let dayScrapped = issuanceReturns.filter(ret => {
-        if (!ret.returnDate.startsWith(dateStr)) return false;
-        if (movementSiteFilter !== 'all') {
-          const loc = locations.find(l => l.id === ret.returnedToLocationId);
-          if (loc?.site !== movementSiteFilter) return false;
-        }
-        return ret.condition === 'damaged' || ret.condition === 'worn_out';
-      }).reduce((acc, curr) => acc + curr.quantityReturned, 0);
+  const pendingAdjustments = scopedAdjustments.filter(a => a.status === 'pending').length;
+  const openLoans = scopedIssuances.filter(i => i.isLoan && i.status === 'issued').length;
 
-      dataPoints.push({
-        date: dateStr,
-        displayDate,
-        issued: dayIssued,
-        returned: dayReturned,
-        scrapped: dayScrapped
+  // Replacements due count
+  const replacementsDueCount = issuances.filter(i => i.status === 'issued' && i.expectedReplacementDate && new Date(i.expectedReplacementDate) <= new Date()).length;
+
+  // STAT CARDS
+  const statCards = [
+    { label: t('outOfStock'), count: outOfStockCount, icon: PackageX, color: 'text-safety-red', bg: 'bg-safety-red/10', link: '/stock?filter=out_of_stock' },
+    { label: t('lowStock'), count: lowStockCount, icon: PackageMinus, color: 'text-safety-amber-signal', bg: 'bg-safety-amber-signal/10', link: '/stock?filter=low_stock' },
+    { label: 'Replacements Due', count: replacementsDueCount, icon: Clock, color: 'text-safety-amber-signal', bg: 'bg-safety-amber-signal/10', link: '/replacements-due' },
+    { label: 'Pending Adjustments', count: pendingAdjustments, icon: ClipboardList, color: 'text-accent', bg: 'bg-accent/10', link: '/stock/adjustments' },
+    { label: t('openLoans'), count: openLoans, icon: PackageSearch, color: 'text-ink', bg: 'bg-border', link: '/issuances/open-loans' },
+  ];
+
+  // ----------------------------------------------------
+  // TAB 1 DATA (PPE-045): Stock Movement Trend Chart
+  // ----------------------------------------------------
+  const movementTrendData = React.useMemo(() => {
+    const today = new Date();
+    const intervals: { label: string; start: Date; end: Date; issued: number; returned: number; scrapped: number }[] = [];
+    const stepDays = movementDays === 30 ? 5 : 15;
+    const numBuckets = movementDays / stepDays;
+
+    for (let i = numBuckets - 1; i >= 0; i--) {
+      const bucketEnd = subDays(today, i * stepDays);
+      const bucketStart = subDays(bucketEnd, stepDays);
+      const label = format(bucketEnd, 'MMM d');
+
+      const issuedCount = scopedIssuances.filter(iss => {
+        const d = new Date(iss.issueDate);
+        return d >= bucketStart && d <= bucketEnd;
+      }).reduce((sum, iss) => sum + iss.quantity, 0);
+
+      const returnedCount = issuanceReturns.filter(ret => {
+        const d = new Date(ret.returnDate);
+        return d >= bucketStart && d <= bucketEnd;
+      }).length;
+
+      const scrappedCount = scrapEntries.filter(scr => {
+        const d = new Date(scr.createdAt);
+        return d >= bucketStart && d <= bucketEnd && !scr.reversed;
+      }).reduce((sum, scr) => sum + scr.quantity, 0);
+
+      intervals.push({
+        label,
+        start: bucketStart,
+        end: bucketEnd,
+        issued: issuedCount,
+        returned: returnedCount,
+        scrapped: scrappedCount
       });
     }
 
-    return dataPoints;
-  }, [movementDateRange, movementSiteFilter, issuances, issuanceReturns, locations]);
+    return intervals;
+  }, [movementDays, scopedIssuances, issuanceReturns, scrapEntries]);
 
-  const totalMovementActivity = React.useMemo(() => {
-    return movementChartData.reduce((acc, d) => acc + d.issued + d.returned + d.scrapped, 0);
-  }, [movementChartData]);
+  // Max value for scaling
+  const maxMovementVal = Math.max(10, ...movementTrendData.map(d => (visibleLayers.issued ? d.issued : 0) + (visibleLayers.returned ? d.returned : 0) + (visibleLayers.scrapped ? d.scrapped : 0)));
 
-  const toggleSeries = (seriesKey: string) => {
-    setHiddenSeries(prev => ({ ...prev, [seriesKey]: !prev[seriesKey] }));
-  };
+  // ----------------------------------------------------
+  // TAB 2 DATA (PPE-046): Location Capacity Stacked Bar
+  // ----------------------------------------------------
+  const locationCapacityData = React.useMemo(() => {
+    return locations
+      .filter(l => myLocations.includes(l.id))
+      .map(loc => {
+        const capacity = loc.capacityUnits || 500;
+        const totalOnHand = stockBalances
+          .filter(b => b.locationId === loc.id)
+          .reduce((sum, b) => sum + b.quantityOnHand, 0);
 
-  const handleResetZoom = () => {
-    setZoomKey(prev => prev + 1);
-  };
+        const quarantined = stockBalances
+          .filter(b => b.locationId === loc.id)
+          .reduce((sum, b) => sum + (b.quarantinedOnHand || 0), 0);
 
-  // ==========================================
-  // TAB 2: Location Capacity & Stock (BD-I491 + BD-I466)
-  // ==========================================
-  const [selectedLocationBarId, setSelectedLocationBarId] = React.useState<string | null>(null);
+        const available = Math.max(0, totalOnHand - quarantined);
+        const free = Math.max(0, capacity - totalOnHand);
+        const utilizationPct = Math.round((totalOnHand / capacity) * 100);
 
-  // Filter locations by RBAC (Exclude Scrap locations from capacity chart)
-  const capacityLocations = React.useMemo(() => {
-    let locs = locations.filter(l => l.active && l.stockCondition !== 'Scrap');
-    if (currentUser.role === 'Store Keeper') {
-      locs = locs.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id));
-    }
-    return locs;
-  }, [locations, currentUser]);
+        return {
+          loc,
+          capacity,
+          available,
+          quarantined,
+          free,
+          totalOnHand,
+          utilizationPct,
+          isNearCapacity: utilizationPct >= 90 && utilizationPct <= 100,
+          isOverCapacity: utilizationPct > 100
+        };
+      });
+  }, [locations, myLocations, stockBalances]);
 
-  const capacityChartData = React.useMemo(() => {
-    return capacityLocations.map(loc => {
-      const locBatches = batches.filter(b => b.locationId === loc.id);
-      const onHand = locBatches.reduce((acc, b) => acc + b.quantity, 0);
-      const quarantined = locBatches.reduce((acc, b) => acc + b.quarantinedQty, 0);
-      const available = locBatches.reduce((acc, b) => acc + b.availableQty, 0);
-      const capacity = loc.capacityUnits || 1;
+  // Filtered inventory table for Tab 2
+  const selectedLocationStock = React.useMemo(() => {
+    if (!selectedLocationId) return [];
+    return stockBalances
+      .filter(b => b.locationId === selectedLocationId && b.quantityOnHand > 0)
+      .map(b => ({
+        ...b,
+        item: ppeItems.find(p => p.id === b.ppeItemId)
+      }));
+  }, [selectedLocationId, stockBalances, ppeItems]);
 
-      const isOvercapacity = onHand > capacity;
-      const emptySpace = isOvercapacity ? 0 : Math.max(0, capacity - onHand);
+  // ----------------------------------------------------
+  // TAB 3 DATA (PPE-047): Top Job Kits
+  // ----------------------------------------------------
+  const topJobKitsData = React.useMemo(() => {
+    return kits.map(kit => {
+      const issueCount = issuances.filter(i => i.kitId === kit.id).length;
+      
+      // Stock health check across all items in kit
+      let isFullyStocked = true;
+      let hasSomeStock = false;
+
+      kit.items.forEach(ki => {
+        const totalAvail = stockBalances
+          .filter(b => b.ppeItemId === ki.ppeItemId)
+          .reduce((sum, b) => sum + Math.max(0, b.quantityOnHand - (b.quarantinedOnHand || 0)), 0);
+
+        if (totalAvail < ki.qty) isFullyStocked = false;
+        if (totalAvail > 0) hasSomeStock = true;
+      });
 
       return {
-        id: loc.id,
-        name: loc.nameEn,
-        site: loc.site,
-        capacity,
-        onHand,
-        available,
-        quarantined,
-        emptySpace,
-        isOvercapacity,
-        percentAvailable: Math.round((available / capacity) * 100),
-        percentQuarantined: Math.round((quarantined / capacity) * 100),
-        percentUsed: Math.round((onHand / capacity) * 100)
+        kit,
+        issueCount,
+        isFullyStocked,
+        isPartial: !isFullyStocked && hasSomeStock,
+        isOutOfStock: !hasSomeStock
       };
-    });
-  }, [capacityLocations, batches]);
+    }).sort((a, b) => b.issueCount - a.issueCount).slice(0, 5);
+  }, [kits, issuances, stockBalances]);
 
-  // Stock Grid filtered by selected location bar (or all assigned)
-  const stockGridItems = React.useMemo(() => {
-    let targetLocIds = selectedLocationBarId 
-      ? [selectedLocationBarId] 
-      : capacityLocations.map(l => l.id);
-
-    const items: {
-      locationId: string;
-      locationName: string;
-      ppeItemId: string;
-      itemCode: string;
-      itemName: string;
-      riskCategory: string;
-      onHand: number;
-      quarantined: number;
-      available: number;
-      reorderLevel: number;
-      isLowStock: boolean;
-      condition: string;
-    }[] = [];
-
-    targetLocIds.forEach(locId => {
-      const loc = locations.find(l => l.id === locId);
-      ppeItems.filter(p => p.active && p.locationIds.includes(locId)).forEach(ppe => {
-        const itemBatches = batches.filter(b => b.locationId === locId && b.ppeItemId === ppe.id);
-        const onHand = itemBatches.reduce((acc, b) => acc + b.quantity, 0);
-        const quarantined = itemBatches.reduce((acc, b) => acc + b.quarantinedQty, 0);
-        const available = Math.max(0, onHand - quarantined);
-        const reorderLevel = ppe.reorderLevels[locId] || 0;
-        const isLowStock = available < reorderLevel;
-
-        items.push({
-          locationId: locId,
-          locationName: loc?.nameEn || locId,
-          ppeItemId: ppe.id,
-          itemCode: ppe.itemCode,
-          itemName: language === 'en' ? ppe.nameEn : ppe.nameAr,
-          riskCategory: ppe.riskCategory,
-          onHand,
-          quarantined,
-          available,
-          reorderLevel,
-          isLowStock,
-          condition: loc?.stockCondition === 'Used' ? 'Reused' : 'New'
-        });
-      });
-    });
-
-    return items;
-  }, [selectedLocationBarId, capacityLocations, locations, ppeItems, batches, language]);
-
-  // ==========================================
-  // TAB 3: "Issuance" Top Job Kits (BD-I492)
-  // ==========================================
-  const [kitTimeframe, setKitTimeframe] = React.useState<'today' | 'week' | 'month'>('week');
-  const [selectedKitToIssue, setSelectedKitToIssue] = React.useState<any | null>(null);
-  const [issueModalOpen, setIssueModalOpen] = React.useState(false);
-
-  const topJobKitsData = React.useMemo(() => {
-    const activeKits = kits.filter(k => k.active && !k.deletedAt);
-    
-    // Evaluate stock status for each kit
-    return activeKits.map(kit => {
-      // Calculate issuance count in chosen timeframe
-      const count = issuances.filter(iss => iss.kitId === kit.id).length + Math.floor(Math.random() * 5); // simulated baseline
-
-      // Check stock availability across user's locations
- let totalLines = kit.items.length;
- let inStockLines = 0;
-
- kit.items.forEach(item => {
- const available = batches
- .filter(b => b.ppeItemId === item.ppeItemId && (currentUser.role !== 'Store Keeper' || locations.find(l => l.id === b.locationId)?.assignedStoreKeeperIds.includes(currentUser.id)))
- .reduce((acc, b) => acc + b.availableQty, 0);
- 
- if (available >= item.quantity) {
- inStockLines++;
- }
- });
-
- let stockState: 'full' | 'partial' | 'out' = 'full';
- if (inStockLines === 0) stockState = 'out';
- else if (inStockLines < totalLines) stockState = 'partial';
-
- return {
- kit,
- kitId: kit.id,
- name: language === 'en' ? kit.nameEn : kit.nameAr,
- issuanceCount: count || 1,
- stockState,
- inStockLines,
- totalLines
- };
- }).sort((a, b) => b.issuanceCount - a.issuanceCount).slice(0, 5);
- }, [kits, issuances, batches, locations, currentUser, language, kitTimeframe]);
-
- const handleKitBarClick = (kitItem: any) => {
- if (kitItem.stockState === 'out') {
- showInfo('Stock Alert', 'Insufficient stock to issue this kit. All items in the kit are currently out of stock.');
-      return;
-    }
-    setSelectedKitToIssue(kitItem.kit);
-    setIssueModalOpen(true);
-  };
-
-  const activeWorkforceCount = employees ? employees.filter(e => e.active).length : 234;
+  if (currentUser.role === 'Employee') {
+    return (
+      <div>
+        <PageHeader title={t('dashboard')} />
+        <div className="bg-surface p-8 rounded-lg border border-border text-center">
+          <p className="text-body mb-4">You are logged in with Employee access permissions.</p>
+          <Button onClick={() => navigate('/my-ppe')}>View My Issued PPE</Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Prometeon Executive Header Bar */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-2xl bg-white border border-[#E2E8F0] shadow-xs">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-xl bg-[#eaf1ff] text-[#212B59] flex items-center justify-center shrink-0">
-            <Activity className="w-5 h-5 text-primary" />
+    <div className="space-y-6 pb-20">
+      <PageHeader 
+        title={t('dashboard')} 
+        subtitle="Real-time HSE inventory intelligence, trend analysis, and equipment compliance" 
+        actions={
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => navigate('/issuances/new-kit')}>
+              <Briefcase className="w-4 h-4 mr-1.5" /> Issue Kit
+            </Button>
+            <Button onClick={() => navigate('/issuances/new')}>
+              Issue Single PPE
+            </Button>
           </div>
-          <div>
-            <h1 className="text-xl sm:text-2xl font-black text-[#1E293B] tracking-tight">
-              {language === 'ar' ? 'لوحة القيادة التنفيذية للسلامة والعمليات' : 'Executive HSE & Operations Dashboard'}
-            </h1>
-            <p className="text-xs text-[#64748B] mt-0.5">
-              {language === 'ar' ? 'نظرة عامة على أداء السلامة، أجهزة ومعدات الوقاية، العمليات والمخزون' : 'Overview of safety performance, PPE compliance, warehouse operations, and inventory'} • {language === 'ar' ? 'التوقيت المحلي: إفريقيا/القاهرة' : 'Dates in Africa/Cairo'}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2.5 self-start lg:self-auto">
-          <div className="flex items-center bg-[#F7F8FC] border border-[#E2E8F0] rounded-xl px-3 py-1.5 text-xs font-bold text-[#1E293B]">
-            <button type="button" className="p-0.5 text-[#8A9AAF] hover:text-[#1E293B] cursor-pointer">
-              <ChevronLeft className="w-3.5 h-3.5 rtl:rotate-180" />
-            </button>
-            <div className="flex items-center gap-1.5 px-3">
-              <Calendar className="w-3.5 h-3.5 text-primary" />
-              <span>2026</span>
+        }
+      />
+      
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {statCards.map((stat, idx) => (
+          <Link key={idx} to={stat.link} className="p-3.5 bg-surface border border-border rounded hover:bg-canvas transition-colors flex flex-col justify-between">
+            <div className="text-[11px] font-bold text-body uppercase tracking-wider mb-2 flex items-center justify-between">
+              <span>{stat.label}</span>
+              <stat.icon className={`w-3.5 h-3.5 ${stat.color}`} />
             </div>
-            <button type="button" className="p-0.5 text-[#8A9AAF] hover:text-[#1E293B] cursor-pointer">
-              <ChevronRight className="w-3.5 h-3.5 rtl:rotate-180" />
-            </button>
+            <div className={`text-2xl font-bold ${stat.color}`}>
+              {String(stat.count).padStart(2, '0')}
+            </div>
+          </Link>
+        ))}
+        <div className="p-3.5 bg-surface border border-border rounded flex flex-col justify-between">
+          <div className="text-[11px] font-bold text-body uppercase tracking-wider mb-1">Total Valuation</div>
+          <div className="text-base font-bold text-ink">EGP {totalValuation.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+          <div className="text-[10px] text-body">Available stock</div>
+        </div>
+      </div>
+
+      {/* Tabs Navigation (PPE-045, PPE-046, PPE-047) */}
+      <div className="flex border-b border-border bg-surface rounded-t px-4 pt-2 gap-2">
+        <button
+          onClick={() => setActiveTab('overview')}
+          className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer ${activeTab === 'overview' ? 'border-accent text-accent' : 'border-transparent text-body hover:text-ink'}`}
+        >
+          Alerts & Activity
+        </button>
+        <button
+          onClick={() => setActiveTab('movements')}
+          className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${activeTab === 'movements' ? 'border-accent text-accent' : 'border-transparent text-body hover:text-ink'}`}
+        >
+          <TrendingUp className="w-3.5 h-3.5" /> Movement Trends (PPE-045)
+        </button>
+        <button
+          onClick={() => setActiveTab('capacity')}
+          className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${activeTab === 'capacity' ? 'border-accent text-accent' : 'border-transparent text-body hover:text-ink'}`}
+        >
+          <BarChart3 className="w-3.5 h-3.5" /> Location Capacity (PPE-046)
+        </button>
+        <button
+          onClick={() => setActiveTab('kits')}
+          className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 cursor-pointer flex items-center gap-1.5 ${activeTab === 'kits' ? 'border-accent text-accent' : 'border-transparent text-body hover:text-ink'}`}
+        >
+          <Briefcase className="w-3.5 h-3.5" /> Top Job Kits (PPE-047)
+        </button>
+      </div>
+
+      {/* TAB: OVERVIEW */}
+      {activeTab === 'overview' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-surface border border-border rounded flex flex-col h-full shadow-sm">
+            <div className="p-4 border-b border-border flex justify-between items-center bg-canvas">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-body flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-safety-amber-signal" />
+                Low Stock Threshold Alerts (PPE-006)
+              </h3>
+              <span className="text-[11px] font-semibold text-safety-amber-signal bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                {lowStockAlerts.length} Action Needed
+              </span>
+            </div>
+            <div className="flex-1 overflow-auto max-h-80 divide-y divide-border">
+              {lowStockAlerts.length === 0 ? (
+                <div className="p-8 text-center text-body">
+                  <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-safety-green" />
+                  <p className="text-xs">All equipment levels are above reorder thresholds.</p>
+                </div>
+              ) : (
+                lowStockAlerts.map((alert, idx) => (
+                  <div key={idx} className="p-3.5 hover:bg-canvas transition-colors flex justify-between items-center text-xs">
+                    <div>
+                      <div className="font-semibold text-ink">{alert.item.name}</div>
+                      <div className="text-body font-mono text-[11px]">{alert.item.itemCode} &middot; {alert.location.name}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-bold text-safety-red">{alert.qty} {getUnitSymbol(alert.item.id)}</div>
+                      <div className="text-[10px] text-body">Reorder: {alert.reorderLevel}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#E2E8F0] bg-white text-xs font-bold text-[#1E293B] hover:bg-[#F5F6FD] transition-colors cursor-pointer shadow-2xs"
-          >
-            <RefreshCw className="w-3.5 h-3.5 text-[#8A9AAF]" />
-            <span>{language === 'ar' ? 'تحديث' : 'Refresh'}</span>
-          </button>
+          <div className="bg-surface border border-border rounded flex flex-col h-full shadow-sm">
+            <div className="p-4 border-b border-border flex justify-between items-center bg-canvas">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-body">Recent Operations Log</h3>
+              <Link to="/issuances" className="text-xs font-semibold text-accent hover:underline">View All &rarr;</Link>
+            </div>
+            <div className="flex-1 overflow-auto max-h-80">
+              <DataTable 
+                data={scopedIssuances.slice(0, 5)}
+                keyExtractor={(item) => item.id}
+                columns={[
+                  { key: 'ref', header: 'Reference', render: (i) => <span className="font-mono text-xs font-semibold">{i.reference || i.id}</span> },
+                  { key: 'date', header: 'Date', render: (i) => format(new Date(i.issueDate), 'MMM d') },
+                  { key: 'qty', header: 'Qty', render: (i) => <span className="font-bold">{i.quantity} {getUnitSymbol(i.ppeItemId)}</span> },
+                  { key: 'status', header: 'Status', render: (i) => (
+                    <StatusBadge status={i.status === 'issued' ? 'info' : 'success'} label={i.status} />
+                  )}
+                ]}
+              />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Prometeon 4-KPI Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-        <KpiCard
-          title={language === 'ar' ? 'القوى العاملة النشطة' : 'ACTIVE WORKFORCE'}
-          value={activeWorkforceCount}
-          subvalue={language === 'ar' ? 'حسابات الموظفين النشطة (حالياً)' : 'Active personnel accounts (current)'}
-          color="primary"
-          icon={<Users className="w-6 h-6 text-primary" />}
-        />
-        <KpiCard
-          title={language === 'ar' ? 'إجمالي الصرف (2026)' : 'ISSUANCES (2026 YTD)'}
-          value={issuances.length}
-          subvalue={language === 'ar' ? 'معدات وقاية مصروفة' : 'PPE items issued this year'}
-          color="warning"
-          icon={<ShieldAlert className="w-6 h-6 text-warning" />}
-        />
-        <KpiCard
-          title={language === 'ar' ? 'أيام بدون حوادث' : 'DAYS WITHOUT INCIDENT'}
-          value="412"
-          subvalue={language === 'ar' ? 'سجل الأمان المعتمد' : 'Verified safety record'}
-          color="success"
-          icon={<ShieldCheck className="w-6 h-6 text-success" />}
-        />
-        <KpiCard
-          title={language === 'ar' ? 'ساعات العمل الآمنة' : 'WORKED HOURS (2026 YTD)'}
-          value="1,480 hrs"
-          subvalue={language === 'ar' ? 'إجمالي الساعات التشغيلية' : 'Zero reportable loss hours'}
-          color="secondary"
-          icon={<Clock className="w-6 h-6 text-secondary" />}
-        />
-      </div>
+      {/* TAB 1 (PPE-045): Interactive Stock Movement Trend */}
+      {activeTab === 'movements' && (
+        <div className="bg-surface border border-border rounded-lg p-6 shadow-sm space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border pb-4">
+            <div>
+              <h3 className="font-bold text-sm text-ink uppercase tracking-wider flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-accent" />
+                Interactive Stock Movement Trend (PPE-045)
+              </h3>
+              <p className="text-xs text-body mt-0.5">
+                Stacked multi-layer analysis of Issued, Returned, and Scrapped equipment
+              </p>
+            </div>
 
-      {/* Tab Switcher & Sub-Dashboards */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#E2E8F0]">
-        <div>
-          <h2 className="text-lg font-bold tracking-tight text-[#1E293B] flex items-center gap-2">
-            {language === 'ar' ? 'تحليلات المخزون والعمليات المتقدمة' : 'Operational PPE Analytics & Intelligence'}
-          </h2>
-          <p className="text-xs text-[#64748B] font-mono mt-0.5">
-            Strictly implementing User Stories BD-I490, BD-I491, and BD-I492
-          </p>
-        </div>
-
-        {/* 3 Tab Navigation */}
-        <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-[#E2E8F0] text-xs font-semibold">
-          <button
-            type="button"
-            onClick={() => setActiveTab('movement')}
-            className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
-              activeTab === 'movement' 
-                ? 'bg-white text-primary shadow-xs font-bold' 
-                : 'text-[#64748B] hover:text-[#1E293B]'
-            }`}
-          >
-            <TrendingUp className="w-3.5 h-3.5 text-blue-600" />
-            {language === 'ar' ? 'حركة المخزون' : 'Stock Movement'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('capacity')}
-            className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
-              activeTab === 'capacity' 
-                ? 'bg-white text-primary shadow-xs font-bold' 
-                : 'text-[#64748B] hover:text-[#1E293B]'
-            }`}
-          >
-            <Warehouse className="w-3.5 h-3.5 text-teal-600" />
-            {language === 'ar' ? 'سعة المستودعات' : 'Capacity & Levels'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('issuance')}
-            className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
-              activeTab === 'issuance' 
-                ? 'bg-white text-primary shadow-xs font-bold' 
-                : 'text-[#64748B] hover:text-[#1E293B]'
-            }`}
-          >
-            <Briefcase className="w-3.5 h-3.5 text-indigo-600" />
-            {language === 'ar' ? 'أطقم الوظائف' : 'Top Job Kits'}
-          </button>
-        </div>
-      </div>
-
-      {/* ========================================================= */}
-      {/* TAB 1: STOCK MOVEMENT TREND (BD-I490) */}
-      {/* ========================================================= */}
-      {activeTab === 'movement' && (
-        <div className="space-y-4 animate-in fade-in duration-200">
-          {/* Controls Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white rounded-lg border border-slate-200 shadow-2xs">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Date Window:</span>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden text-xs">
+            <div className="flex items-center gap-4">
+              {/* Date Filter */}
+              <div className="flex border border-border rounded overflow-hidden text-xs font-semibold">
                 <button
-                  type="button"
-                  onClick={() => setMovementDateRange('30')}
-                  className={`px-3 py-1 font-semibold transition-colors cursor-pointer ${
-                    movementDateRange === '30' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
+                  onClick={() => setMovementDays(30)}
+                  className={`px-3 py-1.5 cursor-pointer ${movementDays === 30 ? 'bg-accent text-white' : 'bg-surface text-body'}`}
                 >
                   Last 30 Days
                 </button>
                 <button
-                  type="button"
-                  onClick={() => setMovementDateRange('90')}
-                  className={`px-3 py-1 font-semibold transition-colors border-s border-slate-200 cursor-pointer ${
-                    movementDateRange === '90' ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
+                  onClick={() => setMovementDays(90)}
+                  className={`px-3 py-1.5 cursor-pointer ${movementDays === 90 ? 'bg-accent text-white' : 'bg-surface text-body'}`}
                 >
                   Last 90 Days
                 </button>
               </div>
-            </div>
 
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="font-bold text-slate-700 uppercase tracking-wider">Site:</span>
-                <Select
-                  value={movementSiteFilter}
-                  onChange={(e) => setMovementSiteFilter(e.target.value)}
-                  className="w-36 text-xs"
+              {/* Interactive Legend Toggles (PPE-045) */}
+              <div className="flex items-center gap-2 text-xs">
+                <button
+                  onClick={() => setVisibleLayers(prev => ({ ...prev, issued: !prev.issued }))}
+                  className={`px-2.5 py-1 rounded border flex items-center gap-1.5 cursor-pointer font-bold transition-all ${
+                    visibleLayers.issued ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-gray-100 border-gray-200 text-gray-400 line-through'
+                  }`}
                 >
-                  <option value="all">All Sites</option>
-                  <option value="Cairo Site">Cairo Site</option>
-                  <option value="Alexandria Site">Alexandria Site</option>
-                  <option value="Main Campus">Main Campus</option>
-                </Select>
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600" /> Issued
+                </button>
+                <button
+                  onClick={() => setVisibleLayers(prev => ({ ...prev, returned: !prev.returned }))}
+                  className={`px-2.5 py-1 rounded border flex items-center gap-1.5 cursor-pointer font-bold transition-all ${
+                    visibleLayers.returned ? 'bg-green-50 border-green-300 text-green-700' : 'bg-gray-100 border-gray-200 text-gray-400 line-through'
+                  }`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-600" /> Returned
+                </button>
+                <button
+                  onClick={() => setVisibleLayers(prev => ({ ...prev, scrapped: !prev.scrapped }))}
+                  className={`px-2.5 py-1 rounded border flex items-center gap-1.5 cursor-pointer font-bold transition-all ${
+                    visibleLayers.scrapped ? 'bg-red-50 border-red-300 text-red-700' : 'bg-gray-100 border-gray-200 text-gray-400 line-through'
+                  }`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-600" /> Scrapped
+                </button>
               </div>
-
-              <Button variant="secondary" size="sm" onClick={handleResetZoom}>
-                Reset Zoom
-              </Button>
             </div>
           </div>
 
-          {/* Interactive Stacked Area Chart Container */}
-          <div className="p-5 bg-white rounded-lg border border-slate-200 shadow-2xs relative">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Stock Velocity Timeline (Issued, Returned, Scrapped)
-                </h3>
-                <span className="text-[11px] text-slate-500 font-mono">
-                  Click legend pills to toggle layers • Drag bottom slider to zoom into date windows
-                </span>
-              </div>
+          {/* Stacked Visual Chart */}
+          <div className="pt-4">
+            <div className="h-64 flex items-end gap-3 border-b border-border pb-2 px-2">
+              {movementTrendData.map((d, i) => {
+                const issuedH = visibleLayers.issued ? (d.issued / maxMovementVal) * 100 : 0;
+                const retH = visibleLayers.returned ? (d.returned / maxMovementVal) * 100 : 0;
+                const scrH = visibleLayers.scrapped ? (d.scrapped / maxMovementVal) * 100 : 0;
 
-              {/* Interactive Clickable Legend */}
-              <div className="flex items-center gap-2 text-xs font-semibold">
-                <button
-                  type="button"
-                  onClick={() => toggleSeries('issued')}
-                  className={`px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1.5 cursor-pointer ${
-                    hiddenSeries.issued 
-                      ? 'border-slate-300 bg-slate-100 text-slate-400 line-through' 
-                      : 'border-blue-500 bg-blue-50 text-blue-800'
-                  }`}
-                >
-                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
-                  Issued
-                </button>
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center h-full justify-end group relative">
+                    {/* Tooltip */}
+                    <div className="absolute -top-16 opacity-0 group-hover:opacity-100 transition-opacity bg-ink text-white text-[10px] p-2 rounded shadow-lg pointer-events-none z-20 whitespace-nowrap">
+                      <div className="font-bold border-b border-white/20 pb-0.5">{d.label}</div>
+                      <div>Issued: {d.issued}</div>
+                      <div>Returned: {d.returned}</div>
+                      <div>Scrapped: {d.scrapped}</div>
+                    </div>
 
-                <button
-                  type="button"
-                  onClick={() => toggleSeries('returned')}
-                  className={`px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1.5 cursor-pointer ${
-                    hiddenSeries.returned 
-                      ? 'border-slate-300 bg-slate-100 text-slate-400 line-through' 
-                      : 'border-emerald-500 bg-emerald-50 text-emerald-800'
-                  }`}
-                >
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" />
-                  Returned (Good)
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => toggleSeries('scrapped')}
-                  className={`px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1.5 cursor-pointer ${
-                    hiddenSeries.scrapped 
-                      ? 'border-slate-300 bg-slate-100 text-slate-400 line-through' 
-                      : 'border-red-500 bg-red-50 text-red-800'
-                  }`}
-                >
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-600" />
-                  Scrapped
-                </button>
-              </div>
+                    {/* Stacked bar */}
+                    <div className="w-full max-w-[40px] flex flex-col-reverse rounded-t overflow-hidden bg-gray-100">
+                      {visibleLayers.issued && (
+                        <div style={{ height: `${issuedH}%` }} className="w-full bg-blue-600 transition-all" />
+                      )}
+                      {visibleLayers.returned && (
+                        <div style={{ height: `${retH}%` }} className="w-full bg-green-600 transition-all" />
+                      )}
+                      {visibleLayers.scrapped && (
+                        <div style={{ height: `${scrH}%` }} className="w-full bg-red-600 transition-all" />
+                      )}
+                    </div>
+                    <span className="text-[10px] font-mono text-body mt-2">{d.label}</span>
+                  </div>
+                );
+              })}
             </div>
-
-            {totalMovementActivity === 0 && (
-              <div className="absolute inset-0 flex items-center justify-center bg-white/70 backdrop-blur-2xs z-10">
-                <span className="text-xl font-extrabold text-slate-300 uppercase tracking-widest pointer-events-none">
-                  No activity found in selected period
-                </span>
-              </div>
-            )}
-
-            <div className="h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart 
-                  key={zoomKey}
-                  data={movementChartData} 
-                  margin={{ top: 10, right: 30, left: 0, bottom: 20 }}
-                >
-                  <defs>
-                    <linearGradient id="colorIssued" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0.1}/>
-                    </linearGradient>
-                    <linearGradient id="colorReturned" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#16a34a" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#16a34a" stopOpacity={0.1}/>
-                    </linearGradient>
-                    <linearGradient id="colorScrapped" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#dc2626" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#dc2626" stopOpacity={0.1}/>
-                    </linearGradient>
-                  </defs>
-
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis dataKey="displayDate" tick={{ fontSize: 11, fill: '#64748b' }} />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
-                  
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '12px' }}
-                    formatter={(val: any, name: any) => [`${val} units`, name.toUpperCase()]}
-                  />
-
-                  {!hiddenSeries.scrapped && (
-                    <Area type="monotone" dataKey="scrapped" stackId="1" stroke="#dc2626" fill="url(#colorScrapped)" />
-                  )}
-                  {!hiddenSeries.returned && (
-                    <Area type="monotone" dataKey="returned" stackId="1" stroke="#16a34a" fill="url(#colorReturned)" />
-                  )}
-                  {!hiddenSeries.issued && (
-                    <Area type="monotone" dataKey="issued" stackId="1" stroke="#2563eb" fill="url(#colorIssued)" />
-                  )}
-
-                  <Brush dataKey="displayDate" height={25} stroke="#94a3b8" />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div className="flex justify-between text-[11px] text-body pt-2 px-2 font-mono">
+              <span>Past Interval Start</span>
+              <span>Today ({format(new Date(), 'MMM d, yyyy')})</span>
             </div>
           </div>
         </div>
       )}
 
-      {/* ========================================================= */}
-      {/* TAB 2: INVENTORY & LOCATION CAPACITY (BD-I491 + BD-I466) */}
-      {/* ========================================================= */}
+      {/* TAB 2 (PPE-046): Location Capacity Stacked Bar & Click Filter */}
       {activeTab === 'capacity' && (
-        <div className="space-y-6 animate-in fade-in duration-200">
-          {/* Capacity Horizontal Stacked Bar Chart */}
-          <div className="p-5 bg-white rounded-lg border border-slate-200 shadow-2xs">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Location Capacity Stacked Distribution (Available, Quarantined, Empty Space)
-                </h3>
-                <span className="text-[11px] text-slate-500 font-mono">
-                  Click any location bar to filter the stock inventory grid below • Scrap locations excluded per rule
-                </span>
-              </div>
-
-              {selectedLocationBarId && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedLocationBarId(null)}
-                  className="px-2.5 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-md text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <span>Filtering: {locations.find(l => l.id === selectedLocationBarId)?.nameEn}</span>
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  layout="vertical"
-                  data={capacityChartData}
-                  margin={{ top: 10, right: 30, left: 40, bottom: 10 }}
-                  onClick={(state: any) => {
-                    if (state && state.activePayload && state.activePayload[0]) {
-                      const clickedId = state.activePayload[0].payload.id;
-                      setSelectedLocationBarId(clickedId === selectedLocationBarId ? null : clickedId);
-                    }
-                  }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: '#64748b' }} />
-                  <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: '#1e293b', fontWeight: 600 }} width={160} />
-                  
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '12px' }}
-                    formatter={(val: any, name: any, item: any) => {
-                      const payload = item.payload;
-                      if (name === 'available') return [`${val} units (${payload.percentAvailable}% of cap)`, 'Available'];
-                      if (name === 'quarantined') return [`${val} units (${payload.percentQuarantined}% of cap)`, 'Quarantined'];
-                      if (name === 'emptySpace') return [`${val} units`, 'Empty Space'];
-                      return [val, name];
-                    }}
-                  />
-
-                  <Legend 
-                    verticalAlign="top" 
-                    height={36} 
-                    formatter={(val) => <span className="text-xs font-semibold capitalize text-slate-700">{val}</span>} 
-                  />
-
-                  <Bar dataKey="available" name="Available" stackId="a" fill="#0d9488" cursor="pointer" />
-                  <Bar dataKey="quarantined" name="Quarantined" stackId="a" fill="#d97706" cursor="pointer" />
-                  <Bar dataKey="emptySpace" name="Empty Space" stackId="a" fill="#e2e8f0" cursor="pointer" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Stock Levels & Low Stock Grid (BD-I466) */}
-          <ContainerCard noPadding className="overflow-hidden">
-            <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 ">
-                  Stock Levels & Reorder Watchlist (BD-I466)
-                </h4>
-                <p className="text-[11px] text-slate-500 font-mono">
-                  Available = On Hand - Quarantined • Red badge fires when Available &lt; Reorder Level
-                </p>
-              </div>
-
-              <span className="text-xs font-mono font-bold text-slate-600 bg-white border border-slate-200 px-2 py-1 rounded">
-                Showing {stockGridItems.length} records
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-start text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-100/70 border-b border-slate-200 text-slate-600 font-mono text-[11px] uppercase">
-                    <th className="py-2.5 px-4 text-start">Location</th>
-                    <th className="py-2.5 px-4 text-start">Item Code</th>
-                    <th className="py-2.5 px-4 text-start">Item Name</th>
-                    <th className="py-2.5 px-4 text-start">Risk Cat</th>
-                    <th className="py-2.5 px-4 text-end">On Hand</th>
-                    <th className="py-2.5 px-4 text-end">Quarantined</th>
-                    <th className="py-2.5 px-4 text-end font-bold">Available</th>
-                    <th className="py-2.5 px-4 text-end">Reorder Lvl</th>
-                    <th className="py-2.5 px-4 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 ">
-                  {stockGridItems.map((item, idx) => (
-                    <tr 
-                      key={idx}
-                      className={`hover:bg-slate-50  transition-colors ${item.isLowStock ? 'bg-amber-50/30 ' : ''}`}
-                    >
-                      <td className="py-2.5 px-4 font-semibold text-slate-800 ">{item.locationName}</td>
-                      <td className="py-2.5 px-4 font-mono font-bold text-teal-700 ">{item.itemCode}</td>
-                      <td className="py-2.5 px-4 text-slate-900 font-medium">{item.itemName}</td>
-                      <td className="py-2.5 px-4">
-                        <StatusBadge
-                          status={item.riskCategory}
-                          size="sm"
-                        />
-                      </td>
-                      <td className="py-2.5 px-4 text-end font-mono text-slate-600 ">{item.onHand}</td>
-                      <td className="py-2.5 px-4 text-end font-mono text-amber-700 font-semibold">
-                        {item.quarantined > 0 ? item.quarantined : '—'}
-                      </td>
-                      <td className="py-2.5 px-4 text-end font-mono font-bold text-slate-900 ">
-                        {item.available}
-                      </td>
-                      <td className="py-2.5 px-4 text-end font-mono text-slate-500 ">{item.reorderLevel}</td>
-                      <td className="py-2.5 px-4 text-center">
-                        <StatusBadge
-                          status={item.isLowStock ? 'danger' : 'success'}
-                          size="sm"
-                          pulse={item.isLowStock}
-                          label={item.isLowStock ? 'Low Stock' : 'Adequate'}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </ContainerCard>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* TAB 3: "ISSUANCE" TOP JOB KITS (BD-I492) */}
-      {/* ========================================================= */}
-      {activeTab === 'issuance' && (
-        <div className="space-y-4 animate-in fade-in duration-200">
-          {/* Header & Timeframe */}
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-white rounded-lg border border-slate-200 shadow-2xs">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">
-                Top 5 Most Issued Job Kits — Action-Driven Issuance Bar
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Capacity Bars */}
+          <div className="lg:col-span-2 bg-surface border border-border rounded-lg p-5 shadow-sm space-y-4">
+            <div className="border-b border-border pb-3">
+              <h3 className="font-bold text-sm text-ink uppercase tracking-wider flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-accent" />
+                Location Capacity Utilization (PPE-046)
               </h3>
-              <p className="text-xs text-slate-500 font-mono">
-                Click any bar to instantly trigger Kit Issuance Modal (BD-I468) pre-filled with this kit
+              <p className="text-xs text-body mt-0.5">
+                Click any location row below to filter and inspect its live stock inventory in the adjacent panel.
               </p>
             </div>
 
-            <div className="flex items-center gap-1.5 text-xs">
-              <span className="font-bold text-slate-700 uppercase tracking-wider">Timeframe:</span>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setKitTimeframe('today')}
-                  className={`px-3 py-1 font-semibold transition-colors cursor-pointer ${
-                    kitTimeframe === 'today' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  Today
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setKitTimeframe('week')}
-                  className={`px-3 py-1 font-semibold transition-colors border-s border-slate-200 cursor-pointer ${
-                    kitTimeframe === 'week' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  This Week
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setKitTimeframe('month')}
-                  className={`px-3 py-1 font-semibold transition-colors border-s border-slate-200 cursor-pointer ${
-                    kitTimeframe === 'month' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  This Month
-                </button>
-              </div>
+            <div className="space-y-4">
+              {locationCapacityData.map(({ loc, capacity, available, quarantined, free, utilizationPct, isNearCapacity, isOverCapacity }) => {
+                const isSelected = selectedLocationId === loc.id;
+                const availPct = Math.round((available / capacity) * 100);
+                const quarPct = Math.round((quarantined / capacity) * 100);
+                const freePct = Math.max(0, 100 - availPct - quarPct);
+
+                return (
+                  <div 
+                    key={loc.id} 
+                    onClick={() => setSelectedLocationId(isSelected ? null : loc.id)}
+                    className={`p-3.5 rounded border transition-all cursor-pointer ${
+                      isSelected 
+                        ? 'border-accent bg-accent/5 ring-1 ring-accent' 
+                        : 'border-border bg-canvas/40 hover:bg-canvas'
+                    }`}
+                  >
+                    <div className="flex justify-between items-center mb-1.5">
+                      <div>
+                        <span className="font-bold text-xs text-ink">{loc.name}</span>
+                        <span className="text-[11px] text-body ml-2 font-mono">({loc.code} &middot; {loc.site})</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isOverCapacity && (
+                          <span className="text-[10px] font-bold text-safety-red bg-red-50 border border-red-200 px-1.5 py-0.2 rounded">
+                            OVER CAPACITY
+                          </span>
+                        )}
+                        {isNearCapacity && (
+                          <span className="text-[10px] font-bold text-safety-amber-signal bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded">
+                            ≥ 90% NEAR CAPACITY
+                          </span>
+                        )}
+                        <span className={`text-xs font-bold font-mono ${isOverCapacity ? 'text-safety-red' : isNearCapacity ? 'text-safety-amber-signal' : 'text-ink'}`}>
+                          {utilizationPct}% ({loc.capacityUnits} cap)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Stacked bar: Available (green), Quarantined (amber), Free (gray) */}
+                    <div className="w-full h-3.5 bg-gray-200 rounded overflow-hidden flex shadow-inner">
+                      <div style={{ width: `${Math.min(100, availPct)}%` }} className="h-full bg-safety-green transition-all" title={`Available: ${available}`} />
+                      <div style={{ width: `${Math.min(100, quarPct)}%` }} className="h-full bg-safety-amber-signal transition-all" title={`Quarantined: ${quarantined}`} />
+                      <div style={{ width: `${freePct}%` }} className="h-full bg-gray-200" title={`Free Space: ${free}`} />
+                    </div>
+
+                    <div className="flex justify-between text-[10px] text-body mt-1.5 font-mono">
+                      <span>Available: {available}</span>
+                      <span>Quarantined: {quarantined}</span>
+                      <span>Free Space: {free}</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          {/* Interactive Tap-Friendly Horizontal Bars */}
-          <div className="grid grid-cols-1 gap-3">
-            {topJobKitsData.map((kItem, idx) => {
-              const isOut = kItem.stockState === 'out';
-              const isPartial = kItem.stockState === 'partial';
+          {/* Dynamic Adjacent Table (PPE-046) */}
+          <div className="bg-surface border border-border rounded-lg p-5 shadow-sm flex flex-col">
+            <div className="border-b border-border pb-3 mb-3">
+              <h4 className="font-bold text-xs text-ink uppercase tracking-wider">
+                {selectedLocationId ? `Stock at Selected Location` : 'Select a location to filter'}
+              </h4>
+              <p className="text-[11px] text-body">
+                {selectedLocationId ? `Showing items currently on hand` : 'Click any location bar on the left'}
+              </p>
+            </div>
 
-              return (
-                <div
-                  key={idx}
-                  onClick={() => handleKitBarClick(kItem)}
-                  className={`p-4 rounded-lg border transition-all duration-150 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 ${
-                    isOut 
-                      ? 'bg-slate-100 border-slate-300 opacity-60 cursor-not-allowed'
-                      : isPartial
-                      ? 'bg-amber-50/50 hover:bg-amber-50 border-amber-200 cursor-pointer shadow-xs hover:border-amber-400'
-                      : 'bg-white hover:bg-teal-50/40 border-slate-200 hover:border-teal-400 cursor-pointer shadow-xs'
-                  }`}
-                  title={isOut ? "Insufficient stock to issue this kit" : "Click to Issue this Kit (BD-I468)"}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center font-bold text-xs text-slate-700 font-mono">
-                      #{idx + 1}
-                    </span>
-                    <div>
-                      <h4 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                        {kItem.name}
-                        {isPartial && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">
-                            Partial Issue ({kItem.inStockLines}/{kItem.totalLines} lines ready)
-                          </span>
-                        )}
-                        {isOut && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800">
-                            All Items Out of Stock
-                          </span>
-                        )}
-                      </h4>
-                      <p className="text-xs text-slate-500 font-mono mt-0.5">
-                        {kItem.totalLines} items required • {kItem.issuanceCount} issuances recorded
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-4">
-                    <div className="text-end">
-                      <span className="text-lg font-extrabold text-slate-900 font-mono">
-                        {kItem.issuanceCount}
-                      </span>
-                      <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-mono">
-                        Issued Units
-                      </span>
-                    </div>
-
-                    <Button 
-                      size="sm" 
-                      variant={isOut ? 'secondary' : 'primary'}
-                      disabled={isOut}
-                      className={isOut ? 'opacity-50' : 'bg-teal-600 hover:bg-teal-700 text-white'}
-                    >
-                      Click to Issue →
-                    </Button>
-                  </div>
+            <div className="flex-1 overflow-y-auto max-h-96">
+              {!selectedLocationId ? (
+                <div className="p-8 text-center text-body text-xs italic">
+                  No location selected. Click a bar to view inventory.
                 </div>
-              );
-            })}
+              ) : selectedLocationStock.length === 0 ? (
+                <div className="p-8 text-center text-body text-xs italic">
+                  No positive stock balances at this location.
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-canvas border-b border-border text-body uppercase font-bold sticky top-0">
+                    <tr>
+                      <th className="p-2">Item</th>
+                      <th className="p-2 text-right">Available</th>
+                      <th className="p-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {selectedLocationStock.map(b => (
+                      <tr key={b.id} className="hover:bg-canvas/50">
+                        <td className="p-2">
+                          <div className="font-semibold text-ink">{b.item?.name || b.ppeItemId}</div>
+                          <div className="text-[10px] text-body font-mono">{b.item?.itemCode}</div>
+                        </td>
+                        <td className="p-2 text-right font-bold text-safety-green">
+                          {Math.max(0, b.quantityOnHand - (b.quarantinedOnHand || 0))}
+                        </td>
+                        <td className="p-2 text-right font-bold text-ink">
+                          {b.quantityOnHand} {getUnitSymbol(b.ppeItemId)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Rapid Action Issue Kit Modal */}
-      {issueModalOpen && selectedKitToIssue && (
-        <IssueKitModal
-          isOpen={issueModalOpen}
-          onClose={() => setIssueModalOpen(false)}
-          preselectedKit={selectedKitToIssue}
-        />
+      {/* TAB 3 (PPE-047): Action-Driven Top Job Kits */}
+      {activeTab === 'kits' && (
+        <div className="bg-surface border border-border rounded-lg p-6 shadow-sm space-y-4">
+          <div className="border-b border-border pb-3">
+            <h3 className="font-bold text-sm text-ink uppercase tracking-wider flex items-center gap-2">
+              <Briefcase className="w-4 h-4 text-accent" />
+              Action-Driven Top Job Kits (PPE-047)
+            </h3>
+            <p className="text-xs text-body mt-0.5">
+              Top issued standardized kits with real-time stock availability and 1-click issue navigation
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {topJobKitsData.map(({ kit, issueCount, isFullyStocked, isPartial, isOutOfStock }) => (
+              <div key={kit.id} className="p-4 rounded border border-border bg-canvas/40 hover:bg-canvas transition-colors flex flex-col justify-between">
+                <div>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h4 className="font-bold text-sm text-ink">{kit.name}</h4>
+                      <p className="text-xs text-body font-mono mt-0.5">{kit.items.length} items bundled</p>
+                    </div>
+
+                    {isFullyStocked ? (
+                      <span className="text-[11px] font-bold text-safety-green bg-green-50 border border-green-200 px-2 py-0.5 rounded">
+                        Full Stock Available
+                      </span>
+                    ) : isPartial ? (
+                      <span className="text-[11px] font-bold text-safety-amber-signal bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                        Partial Stock (G8)
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-bold text-safety-red bg-red-50 border border-red-200 px-2 py-0.5 rounded">
+                        Out of Stock
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="mt-3 flex items-center gap-2 text-xs text-body">
+                    <span className="font-bold text-accent font-mono">{issueCount} times</span> issued to date
+                  </div>
+                </div>
+
+                <div className="mt-5 pt-3 border-t border-border flex justify-end">
+                  <Button 
+                    size="sm"
+                    onClick={() => navigate(`/issuances/new-kit?kitId=${kit.id}`)}
+                  >
+                    Issue this Kit <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

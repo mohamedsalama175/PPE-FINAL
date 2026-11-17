@@ -1,279 +1,306 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
-import { Button } from '../components/ui/Button';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { Select } from '../components/ui/Select';
+import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Input } from '../components/ui/Input';
+import { Select } from '../components/ui/Select';
+import { Button } from '../components/ui/Button';
 import { useToastStore } from '../store/toastStore';
-import { ArrowLeft, ArrowRightLeft, AlertTriangle, AlertOctagon, Check } from 'lucide-react';
+import { AlertTriangle, Info, ArrowRight } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function TransferForm() {
   const navigate = useNavigate();
-  const { t, language } = useTranslation();
-  const { currentUser, locations, ppeItems, batches, transferStock } = usePPEStore();
+  const { ppeItems, locations, batches, stockBalances, currentUser, transferStock, units } = usePPEStore();
+  // PPE-058: a tracked item transfers picked serials
+  const [serialIds, setSerialIds] = React.useState<string[]>([]);
+
+  const isStoreKeeper = currentUser.role === 'Store Keeper';
+
+  // From Location: Assigned to user, active, not Scrap (Rule G6 & PPE-027)
+  const sourceLocations = React.useMemo(() => {
+    return locations.filter(l => {
+      if (!l.active || l.deletedAt) return false;
+      if (l.stockCondition === 'Scrap' || l.locationType === 'Scrap') return false;
+      if (isStoreKeeper && !l.assignedStoreKeeperIds.includes(currentUser.id)) return false;
+      return true;
+    });
+  }, [locations, isStoreKeeper, currentUser.id]);
+
   const addToast = useToastStore(s => s.addToast);
 
-  // Scoped locations based on RBAC (BD-I462)
-  const isStoreKeeper = currentUser.role === 'Store Keeper';
-  const assignedLocations = React.useMemo(() => {
-    let locs = locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap');
-    if (isStoreKeeper) {
-      locs = locs.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id));
-    }
-    return locs;
-  }, [locations, currentUser, isStoreKeeper]);
+  const [formData, setFormData] = React.useState({
+    ppeItemId: '',
+    fromLocationId: sourceLocations[0]?.id || '',
+    toLocationId: '',
+    batchNumber: '',
+    quantity: 1,
+  });
 
-  const [selectedItemId, setSelectedItemId] = React.useState<string>(ppeItems[0]?.id || '');
-  const [fromLocId, setFromLocId] = React.useState<string>(assignedLocations[0]?.id || '');
-  const [selectedBatchNumber, setSelectedBatchNumber] = React.useState<string>('');
-  const [toLocId, setToLocId] = React.useState<string>('');
-  const [quantity, setQuantity] = React.useState<number>(1);
-  const [error, setError] = React.useState<string | null>(null);
+  const selectedItem = React.useMemo(() => {
+    return ppeItems.find(p => p.id === formData.ppeItemId);
+  }, [ppeItems, formData.ppeItemId]);
+
+  const fromLoc = React.useMemo(() => {
+    return locations.find(l => l.id === formData.fromLocationId);
+  }, [locations, formData.fromLocationId]);
+
+  const toLoc = React.useMemo(() => {
+    return locations.find(l => l.id === formData.toLocationId);
+  }, [locations, formData.toLocationId]);
+
+  // Destination locations: Active, not Scrap, different from source
+  const validDestinationLocations = React.useMemo(() => {
+    return locations.filter(l => {
+      if (!l.active || l.deletedAt) return false;
+      if (l.stockCondition === 'Scrap' || l.locationType === 'Scrap') return false; // Blocked per Rule G6
+      if (l.id === formData.fromLocationId) return false;
+      return true;
+    });
+  }, [locations, formData.fromLocationId]);
 
   // Available batches at From Location
   const availableBatches = React.useMemo(() => {
-    return batches.filter(b => 
-      b.ppeItemId === selectedItemId && 
-      b.locationId === fromLocId && 
-      b.availableQty > 0
-    );
-  }, [batches, selectedItemId, fromLocId]);
-
-  // Set default batch when available batches change
-  React.useEffect(() => {
-    if (availableBatches.length > 0) {
-      setSelectedBatchNumber(availableBatches[0].batchNumber);
-    } else {
-      setSelectedBatchNumber('');
-    }
-  }, [availableBatches]);
+    if (!formData.ppeItemId || !formData.fromLocationId) return [];
+    return batches.filter(b => b.ppeItemId === formData.ppeItemId && b.locationId === formData.fromLocationId && b.availableQty > 0);
+  }, [formData.ppeItemId, formData.fromLocationId, batches]);
 
   const selectedBatch = React.useMemo(() => {
-    return availableBatches.find(b => b.batchNumber === selectedBatchNumber);
-  }, [availableBatches, selectedBatchNumber]);
+    return batches.find(b => b.batchNumber === formData.batchNumber && b.ppeItemId === formData.ppeItemId && b.locationId === formData.fromLocationId);
+  }, [batches, formData.batchNumber, formData.ppeItemId, formData.fromLocationId]);
 
-  // Target locations linked to item
-  const validTargetLocations = React.useMemo(() => {
-    const item = ppeItems.find(p => p.id === selectedItemId);
-    if (!item) return [];
-
-    return locations.filter(l => 
-      l.active && 
-      !l.deletedAt && 
-      l.stockCondition !== 'Scrap' && 
-      l.id !== fromLocId && 
-      item.locationIds.includes(l.id)
-    );
-  }, [locations, selectedItemId, fromLocId, ppeItems]);
-
-  React.useEffect(() => {
-    if (validTargetLocations.length > 0 && !validTargetLocations.some(l => l.id === toLocId)) {
-      setToLocId(validTargetLocations[0].id);
+  // Rule G6 Condition Check
+  const conditionViolation = React.useMemo(() => {
+    if (!fromLoc || !toLoc) return '';
+    if ((fromLoc.stockCondition === 'Used' || fromLoc.locationType === 'Used') && toLoc.stockCondition === 'New') {
+      return 'Stock moved from a Used location to a New location is blocked (Rule G6).';
     }
-  }, [validTargetLocations, toLocId]);
+    return '';
+  }, [fromLoc, toLoc]);
 
-  const fromLoc = locations.find(l => l.id === fromLocId);
-  const toLoc = locations.find(l => l.id === toLocId);
+  // Item linked to destination check (PPE-027)
+  const isItemLinkedToDestination = React.useMemo(() => {
+    if (!selectedItem || !toLoc) return true;
+    return selectedItem.locationIds.includes(toLoc.id);
+  }, [selectedItem, toLoc]);
 
-  // Transfer condition routing rule validation
-  const isUsedToNewBlocked = fromLoc?.stockCondition === 'Used' && toLoc?.stockCondition === 'New';
+  // Capacity Warning for destination
+  const isDestinationOverCapacity = React.useMemo(() => {
+    if (!toLoc || !toLoc.capacityUnits) return false;
+    const destOnHand = stockBalances
+      .filter(b => b.locationId === toLoc.id)
+      .reduce((sum, b) => sum + b.quantityOnHand, 0);
+    return (destOnHand + (Number(formData.quantity) || 0)) > toLoc.capacityUnits;
+  }, [toLoc, stockBalances, formData.quantity]);
+
+  const handleBatchSelect = (batchId: string) => {
+    const batch = batches.find(b => b.id === batchId);
+    if (batch) {
+      setFormData(prev => ({ ...prev, batchNumber: batch.batchNumber }));
+    }
+  };
+
+  const tracked = !!selectedItem?.serialTracked;
+  const unitSymbol = units.find(u => u.id === selectedItem?.unitId)?.symbol || '';
+  const quantity = tracked ? serialIds.length : formData.quantity;
+  React.useEffect(() => { setSerialIds([]); }, [formData.ppeItemId, formData.fromLocationId, formData.batchNumber]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-
-    if (!selectedBatch) {
-      setError('Please select an active batch with available stock.');
+    if (tracked && serialIds.length === 0) {
+      addToast('Pick the serial numbers to transfer.', 'error');
+      return;
+    }
+    if (!formData.ppeItemId || !formData.fromLocationId || !formData.toLocationId || !quantity || !formData.batchNumber) {
+      addToast('Please fill all required fields.', 'error');
       return;
     }
 
-    if (quantity <= 0 || quantity > selectedBatch.availableQty) {
-      setError(`Transfer quantity must be between 1 and ${selectedBatch.availableQty}.`);
+    if (formData.fromLocationId === formData.toLocationId) {
+      addToast('Source and destination locations must be different.', 'error');
       return;
     }
 
-    if (isUsedToNewBlocked) {
-      setError('Transfer from a Used-condition location to a New-condition location is strictly BLOCKED.');
+    if (conditionViolation) {
+      addToast(conditionViolation, 'error');
       return;
     }
 
-    const result = transferStock({
-      ppeItemId: selectedItemId,
-      fromLocationId: fromLocId,
-      toLocationId: toLocId,
-      batchNumber: selectedBatch.batchNumber,
-      quantity
-    });
-
-    if (!result.success) {
-      setError(result.error || 'Transfer failed.');
+    if (!isItemLinkedToDestination) {
+      addToast(`Item ${selectedItem?.itemCode} is not linked to destination warehouse ${toLoc?.name}. Add it to the item's locations first (PPE-027).`, 'error');
       return;
     }
 
-    if (result.overcapacityWarning) {
-      addToast(`Transfer executed successfully. Warning: Destination warehouse "${toLoc?.nameEn}" has exceeded capacity.`, 'info');
-    } else {
-      addToast(`Transferred ${quantity} units from ${fromLoc?.nameEn} to ${toLoc?.nameEn}.`, 'success');
+    if (!selectedBatch || selectedBatch.availableQty < quantity) {
+      addToast(`Not enough quantity available in the selected batch (Available: ${selectedBatch?.availableQty || 0}).`, 'error');
+      return;
     }
 
+    const res = transferStock(
+      formData.ppeItemId,
+      formData.fromLocationId,
+      formData.toLocationId,
+      formData.batchNumber,
+      quantity,
+      currentUser.id,
+      tracked ? serialIds : undefined
+    );
+
+    if (!res.success) {
+      addToast(res.message || 'Transfer failed.', 'error');
+      return;
+    }
+
+    addToast('Stock transferred successfully between warehouses (PPE-027).', 'success');
     navigate('/stock/transfers');
   };
 
   return (
-    <div className="max-w-2xl space-y-4">
-      <div className="flex items-center justify-between pb-2">
-        <Button variant="secondary" size="sm" onClick={() => navigate('/stock/transfers')}>
-          <ArrowLeft className="w-3.5 h-3.5 me-1 rtl:rotate-180" /> Back to Transfers
-        </Button>
-      </div>
-
+    <div className="max-w-3xl space-y-6 pb-20">
       <PageHeader
-        title="Execute Stock Transfer (BD-I464)"
-        subtitle="Move equipment between warehouses. Enforces condition rules: Used->New blocked, New->Used marked Reused"
+        title="Transfer Stock Between Locations (PPE-027)"
+        subtitle="Atomic stock movement between warehouses enforcing Rule G6 stock condition transitions"
+        onBack={() => navigate('/stock/transfers')}
       />
 
-      <ContainerCard className="p-6">
-        <form onSubmit={handleSubmit} className="space-y-5 text-xs">
-          {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded text-red-900 font-bold flex items-center gap-2">
-              <AlertOctagon className="w-4 h-4 text-red-600 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
+      {/* Stock Condition Rule Warning */}
+      {conditionViolation && (
+        <div className="p-3 bg-red-50 border border-red-200 text-safety-red rounded flex items-center gap-2 text-xs font-semibold">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>{conditionViolation}</span>
+        </div>
+      )}
 
-          {/* 1. Item Selection */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Equipment Item <span className="text-red-500">*</span>
-            </label>
-            <Select
-              value={selectedItemId}
-              onChange={e => setSelectedItemId(e.target.value)}
-            >
-              {ppeItems.filter(p => p.active).map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.itemCode} — {p.nameEn} ({p.riskCategory})
-                </option>
-              ))}
-            </Select>
+      {/* Destination Not Linked Blocking Warning */}
+      {!isItemLinkedToDestination && (
+        <div className="p-3 bg-red-50 border border-red-200 text-safety-red rounded flex items-center justify-between text-xs font-semibold">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>Item is not linked to destination warehouse {toLoc?.name} (PPE-027).</span>
           </div>
+          <button
+            type="button"
+            onClick={() => navigate(`/catalog/${selectedItem?.id}`)}
+            className="underline font-bold text-accent cursor-pointer"
+          >
+            Edit Item Locations
+          </button>
+        </div>
+      )}
 
-          {/* 2. Source Facility and Batch */}
+      {/* Capacity Warning */}
+      {isDestinationOverCapacity && (
+        <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded flex items-center gap-2 text-xs font-semibold">
+          <Info className="w-4 h-4 shrink-0 text-amber-700" />
+          <span>Non-blocking capacity warning: Transfer will exceed storage capacity at {toLoc?.name}.</span>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg p-6 space-y-6 shadow-sm">
+        <FormSection title="Source & Destination Warehouses">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Source Facility (From) <span className="text-red-500">*</span>
-              </label>
+            <FormGroup label="From Location (Source) *">
               <Select
-                value={fromLocId}
-                onChange={e => setFromLocId(e.target.value)}
+                value={formData.fromLocationId}
+                onChange={e => setFormData({...formData, fromLocationId: e.target.value, ppeItemId: '', batchNumber: ''})}
+                required
               >
-                {assignedLocations.map(l => (
+                <option value="">Select Source Location...</option>
+                {sourceLocations.map(l => (
                   <option key={l.id} value={l.id}>
-                    {l.nameEn} ({l.stockCondition})
+                    {l.code} - {l.name} ({l.stockCondition})
                   </option>
                 ))}
               </Select>
-              <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">
-                Condition: {fromLoc?.stockCondition}
-              </span>
-            </div>
+            </FormGroup>
 
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Source Batch Number <span className="text-red-500">*</span>
-              </label>
+            <FormGroup label="To Location (Destination) *">
               <Select
-                value={selectedBatchNumber}
-                disabled={availableBatches.length === 0}
-                onChange={e => setSelectedBatchNumber(e.target.value)}
+                value={formData.toLocationId}
+                onChange={e => setFormData({...formData, toLocationId: e.target.value})}
+                required
               >
-                {availableBatches.length === 0 ? (
-                  <option value="">No available batches at this location</option>
-                ) : (
-                  availableBatches.map(b => (
-                    <option key={b.id} value={b.batchNumber}>
-                      {b.batchNumber} ({b.availableQty} Avail • {b.condition})
-                    </option>
-                  ))
-                )}
-              </Select>
-            </div>
-          </div>
-
-          {/* 3. Destination Facility */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Destination Facility (To) <span className="text-red-500">*</span>
-            </label>
-            <Select
-              value={toLocId}
-              disabled={validTargetLocations.length === 0}
-              onChange={e => setToLocId(e.target.value)}
-            >
-              {validTargetLocations.length === 0 ? (
-                <option value="">No other assigned locations linked to this item</option>
-              ) : (
-                validTargetLocations.map(l => (
+                <option value="">Select Destination Location...</option>
+                {validDestinationLocations.map(l => (
                   <option key={l.id} value={l.id}>
-                    {l.nameEn} ({l.site} • {l.stockCondition})
+                    {l.code} - {l.name} ({l.stockCondition})
                   </option>
-                ))
+                ))}
+              </Select>
+            </FormGroup>
+          </div>
+        </FormSection>
+
+        <FormSection title="Equipment & Batch Selection">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormGroup label="PPE Item *">
+              <Select
+                value={formData.ppeItemId}
+                onChange={e => setFormData({...formData, ppeItemId: e.target.value, batchNumber: ''})}
+                required
+              >
+                <option value="">Select Item...</option>
+                {ppeItems.filter(p => p.active && !p.deletedAt && p.locationIds.includes(formData.fromLocationId)).map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.itemCode} - {p.name}
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
+
+            <FormGroup label="Available Batch *">
+              <Select
+                value={availableBatches.find(b => b.batchNumber === formData.batchNumber)?.id || ''}
+                onChange={e => handleBatchSelect(e.target.value)}
+                required
+              >
+                <option value="">Select Batch...</option>
+                {availableBatches.map(b => (
+                  <option key={b.id} value={b.id}>
+                    {b.batchNumber} (Available: {b.availableQty} {unitSymbol})
+                  </option>
+                ))}
+              </Select>
+              {formData.ppeItemId && formData.fromLocationId && availableBatches.length === 0 && (
+                <p className="text-xs text-safety-red mt-1">No stock available for this item at source warehouse.</p>
               )}
-            </Select>
-
-            {/* Condition Routing Matrix Alerts */}
-            {isUsedToNewBlocked && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded text-red-900 font-bold mt-2 flex items-center gap-2">
-                <AlertOctagon className="w-4 h-4 text-red-600 shrink-0" />
-                <span>Routing Rule Violation: Transfer from a Used location ({fromLoc?.nameEn}) to a New location ({toLoc?.nameEn}) is strictly blocked.</span>
-              </div>
-            )}
-
-            {fromLoc?.stockCondition === 'New' && toLoc?.stockCondition === 'Used' && (
-              <div className="p-2.5 bg-blue-50 border border-blue-200 rounded text-blue-900 text-[11px] mt-2 flex items-center gap-2">
-                <Check className="w-4 h-4 text-blue-600 shrink-0" />
-                <span>New → Used transfer permitted: Moved inventory will be designated as <strong>Reused</strong> in the destination pool.</span>
-              </div>
-            )}
+            </FormGroup>
           </div>
 
-          {/* 4. Quantity */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Transfer Quantity <span className="text-red-500">*</span>
-            </label>
-            <div className="flex items-center gap-2 max-w-xs">
+          {tracked ? (
+            formData.batchNumber && (
+              <div className="mt-4 space-y-2">
+                <SerialPicker ppeItemId={formData.ppeItemId} locationId={formData.fromLocationId} batchNumber={formData.batchNumber} value={serialIds} onChange={setSerialIds} />
+                <p className="text-xs text-body">Transfer Quantity: <strong className="text-ink">{serialIds.length} {unitSymbol}</strong> (= serials picked)</p>
+              </div>
+            )
+          ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <FormGroup label={`Transfer Quantity (${unitSymbol || '-'}) *`}>
               <Input
                 type="number"
-                min={1}
-                max={selectedBatch?.availableQty || 1}
-                value={quantity}
-                onChange={e => setQuantity(parseInt(e.target.value) || 1)}
+                min="1"
+                max={selectedBatch?.availableQty || 9999}
+                value={formData.quantity}
+                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})}
+                required
               />
-              <span className="text-xs text-slate-400 font-mono whitespace-nowrap">
-                Max: {selectedBatch?.availableQty || 0}
-              </span>
-            </div>
+            </FormGroup>
           </div>
+          )}
+        </FormSection>
 
-          {/* Action Buttons */}
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 ">
-            <Button type="button" variant="secondary" onClick={() => navigate('/stock/transfers')}>
-              Cancel
-            </Button>
-            <Button 
-              type="submit" 
-              disabled={!selectedBatch || isUsedToNewBlocked || validTargetLocations.length === 0}
-            >
-              Execute Transfer
-            </Button>
-          </div>
-        </form>
-      </ContainerCard>
+        <div className="pt-4 flex justify-end gap-3 border-t border-border">
+          <Button type="button" variant="ghost" onClick={() => navigate('/stock/transfers')}>Cancel</Button>
+          <Button
+            type="submit"
+            disabled={Boolean(conditionViolation) || !isItemLinkedToDestination || !formData.batchNumber}
+          >
+            Complete Transfer <ArrowRight className="w-4 h-4 ml-1.5" />
+          </Button>
+        </div>
+      </form>
     </div>
   );
 }

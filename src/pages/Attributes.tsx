@@ -3,309 +3,162 @@ import { usePPEStore } from '../store/useStore';
 import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
 import { DataTable } from '../components/ui/DataTable';
-import { ContainerCard } from '../components/ui/ContainerCard';
 import { FilterBar } from '../components/ui/FilterBar';
 import { SearchInput } from '../components/ui/SearchInput';
-import { Select } from '../components/ui/Select';
 import { Button } from '../components/ui/Button';
 import { ToggleSwitch } from '../components/ui/ToggleSwitch';
 import { EmptyState } from '../components/ui/EmptyState';
-import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
-import { AdminOverrideModal } from '../components/ui/AdminOverrideModal';
-import { TableActionsButtons } from '../components/ui/TableActionsButtons';
-import { StatusBadge } from '../components/ui/StatusBadge';
-import { useSwal } from '../lib/useSwal';
-import { Tags, Plus, Eye, Edit2, Trash2, Layers } from 'lucide-react';
+import { AttributeDetailModal } from '../components/modals/AttributeDetailModal';
+import { OverrideModal } from '../components/ui/OverrideModal';
+import { useToastStore } from '../store/toastStore';
+import { Tags, Plus, Eye } from 'lucide-react';
 import { Attribute } from '../types';
 import { useNavigate } from 'react-router-dom';
 
 export default function Attributes() {
-  const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { showInfo } = useSwal();
-  const { attributes, itemGroups, saveAttribute, trashAttribute, currentUser } = usePPEStore();
-
+  const { attributes, softDeleteEntity, toggleEntityActive, checkInUse } = usePPEStore();
   const [search, setSearch] = React.useState('');
-  const [statusFilter, setStatusFilter] = React.useState<'all' | 'active' | 'inactive'>('active');
-  const [selectedAttrForDetails, setSelectedAttrForDetails] = React.useState<Attribute | null>(null);
+  const [selectedAttribute, setSelectedAttribute] = React.useState<Attribute | null>(null);
+  const [overrideTarget, setOverrideTarget] = React.useState<{ attribute: Attribute; action: 'delete' | 'deactivate'; reasons: string[] } | null>(null);
+  
+  const addToast = useToastStore(s => s.addToast);
+  const navigate = useNavigate();
 
-  const [overrideModal, setOverrideModal] = React.useState<{
-    isOpen: boolean;
-    title: string;
-    warning: string;
-    action: () => void;
-  }>({
-    isOpen: false,
-    title: '',
-    warning: '',
-    action: () => {}
-  });
-
-  const filteredAttributes = React.useMemo(() => {
-    return attributes.filter(attr => {
-      const matchSearch = attr.code.toLowerCase().includes(search.toLowerCase()) ||
-                          attr.nameEn.toLowerCase().includes(search.toLowerCase()) ||
-                          attr.nameAr.includes(search);
-      const matchStatus = statusFilter === 'all' ? true : statusFilter === 'active' ? attr.active : !attr.active;
-      const isNotDeleted = !attr.deletedAt;
-      return matchSearch && matchStatus && isNotDeleted;
+  const filteredItems = React.useMemo(() => {
+    return attributes.filter(item => {
+      const matchSearch = item.code.toLowerCase().includes(search.toLowerCase()) || 
+                          item.name.toLowerCase().includes(search.toLowerCase());
+      const isNotDeleted = !item.deletedAt;
+      return matchSearch && isNotDeleted;
     });
-  }, [attributes, search, statusFilter]);
+  }, [attributes, search]);
 
-  // Check if attribute is linked to any active Item Group
-  const getLinkedGroups = (attrId: string) => {
-    return itemGroups.filter(g => g.active && !g.deletedAt && g.assignedAttributeIds.includes(attrId));
-  };
-
-  const handleToggleActive = async (attr: Attribute) => {
-    if (attr.active) {
-      const linked = getLinkedGroups(attr.id);
-      if (linked.length > 0) {
-        if (currentUser.role !== 'Admin') {
-          await showInfo(
-            'Deactivation Restriction',
-            `This attribute is currently linked to active Item Groups (${linked.map(l => l.nameEn).join(', ')}). Only an Admin can override and deactivate it.`
- );
- return;
- }
-
- setOverrideModal({
- isOpen: true,
- title: `Deactivate In-Use Attribute: ${attr.code}`,
- warning: `This attribute is currently linked to ${linked.length} active Item Group(s) (${linked.map(l => l.nameEn).join(', ')}). Deactivating it requires an Admin Override reason.`,
-          action: () => saveAttribute({ ...attr, active: false })
-        });
+  const handleToggleActive = (item: Attribute) => {
+    if (item.active) {
+      const check = checkInUse('attributes', item.id);
+      if (check.inUse) {
+        setOverrideTarget({ attribute: item, action: 'deactivate', reasons: check.reasons });
         return;
       }
-      saveAttribute({ ...attr, active: false });
+      const res = toggleEntityActive('attributes', item.id, false);
+      if (!res.success) addToast(res.message || 'Error deactivating attribute.', 'error');
+      else addToast('Attribute deactivated.', 'success');
     } else {
-      saveAttribute({ ...attr, active: true });
+      toggleEntityActive('attributes', item.id, true);
+      addToast('Attribute activated.', 'success');
     }
   };
 
-  const handleTrash = async (attr: Attribute) => {
-    const linked = getLinkedGroups(attr.id);
-    if (linked.length > 0) {
-      if (currentUser.role !== 'Admin') {
-        await showInfo(
-          'Deletion Restriction',
-          'Cannot move attribute to trash: Linked to active Item Groups. Only an Admin can override.'
-        );
-        return;
-      }
-
-      setOverrideModal({
-        isOpen: true,
-        title: `Move In-Use Attribute to Trash: ${attr.code}`,
-        warning: `This attribute is linked to ${linked.length} Item Group(s). Deleting it will unlink it from those groups while preserving historical issuance values. An Admin Override reason is required.`,
-        action: () => trashAttribute(attr.id, 'Admin override: Moved in-use attribute to trash')
-      });
+  const handleDelete = (item: Attribute) => {
+    const check = checkInUse('attributes', item.id);
+    if (check.inUse) {
+      setOverrideTarget({ attribute: item, action: 'delete', reasons: check.reasons });
       return;
     }
+    if (!window.confirm(`Are you sure you want to delete attribute ${item.code}?`)) return;
+    const res = softDeleteEntity('attributes', item.id);
+    if (!res.success) addToast(res.message || 'Error deleting attribute.', 'error');
+    else addToast('Attribute moved to Trash Bin.', 'success');
+  };
 
-    setOverrideModal({
-      isOpen: true,
-      title: `Move Attribute to Trash: ${attr.code}`,
-      warning: `This attribute will be moved to the shared Trash Bin (NEW-04).`,
-      action: () => trashAttribute(attr.id, 'Standard deletion')
-    });
+  const handleOverrideConfirm = (reason: string) => {
+    if (!overrideTarget) return;
+    const { attribute, action } = overrideTarget;
+    if (action === 'delete') {
+      const res = softDeleteEntity('attributes', attribute.id, reason);
+      if (res.success) addToast('Attribute deleted with Admin override.', 'success');
+      else addToast(res.message || 'Override failed.', 'error');
+    } else {
+      const res = toggleEntityActive('attributes', attribute.id, false, reason);
+      if (res.success) addToast('Attribute deactivated with Admin override.', 'success');
+      else addToast(res.message || 'Override failed.', 'error');
+    }
+    setOverrideTarget(null);
   };
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title={t('attributes')}
-        subtitle="Define global variant specifications (Sizes, Colors, Gender) for dynamic equipment generation"
-        action={
-          currentUser.role === 'Admin' && (
-            <Button size="sm" onClick={() => navigate('/attributes/new')}>
-              <Plus className="w-3.5 h-3.5 me-1.5" /> Add Attribute
-            </Button>
-          )
-        }
+    <div>
+      <PageHeader 
+        title={t('attributes')} 
+        subtitle="Manage dimensional attributes (sizes, colors, filters) and ordered values"
+        actions={<Button onClick={() => navigate('/attributes/new')}><Plus className="w-4 h-4 mr-2" /> Add Attribute</Button>} 
       />
-
+      
       <FilterBar>
-        <SearchInput
-          placeholder="Search attributes by code or name..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+        <SearchInput 
+          placeholder={t('search')} 
+          value={search} 
+          onChange={(e) => setSearch(e.target.value)} 
         />
-        <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className="w-32">
-          <option value="all">All Status</option>
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
-        </Select>
       </FilterBar>
 
-      <ContainerCard noPadding className="overflow-hidden">
-        <DataTable
-          data={filteredAttributes}
-          keyExtractor={(item) => item.id}
-          emptyState={<EmptyState icon={<Tags className="w-8 h-8 text-slate-400" />} title="No attributes found" />}
-          columns={[
-            {
-              key: 'code',
-              header: 'Code',
-              className: 'w-36 font-mono font-bold text-xs text-slate-900 ',
-              render: (item) => item.code
-            },
-            {
-              key: 'name',
-              header: 'Bilingual Name',
-              render: (item) => (
-                <div>
-                  <span className="font-bold text-slate-900 block">{item.nameEn}</span>
-                  <span className="text-[11px] text-slate-500 font-arabic">{item.nameAr}</span>
-                </div>
-              )
-            },
-            {
-              key: 'values',
-              header: 'Configured Values',
-              render: (item) => (
-                <div className="flex flex-wrap gap-1">
-                  {item.values.map(val => (
-                    <span 
-                      key={val.id} 
-                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-medium ${
-                        val.active 
-                          ? 'bg-slate-100 text-slate-800 border border-[#E2E8F0] ' 
-                          : 'bg-slate-50 text-slate-400 line-through'
-                      }`}
-                    >
-                      {val.valueEn}
-                    </span>
-                  ))}
-                </div>
-              )
-            },
-            {
-              key: 'usage',
-              header: 'Linked Groups',
-              className: 'w-48',
-              render: (item) => {
-                const linked = getLinkedGroups(item.id);
-                if (linked.length === 0) {
-                  return <span className="text-slate-400 text-xs italic">Not currently used</span>;
-                }
-                return (
-                  <div className="flex flex-wrap gap-1">
-                    {linked.map(g => (
-                      <span key={g.id} className="px-1.5 py-0.5 bg-teal-50 text-teal-800 border border-teal-200 rounded text-[10px] font-medium">
-                        {g.nameEn}
-                      </span>
-                    ))}
-                  </div>
-                );
-              }
-            },
-            {
-              key: 'active',
-              header: 'Active',
-              className: 'w-20 text-center',
-              render: (item) => (
-                <ToggleSwitch
-                  checked={item.active}
-                  onChange={() => handleToggleActive(item)}
-                />
-              )
-            },
-            {
-              key: 'actions',
-              header: '',
-              align: 'right',
-              className: 'w-24 text-end',
-              render: (item) => (
-                <TableActionsButtons
-                  onView={() => setSelectedAttrForDetails(item)}
-                  viewTooltip="View Attribute Details (BD-I450)"
-                  onEdit={currentUser.role === 'Admin' ? () => navigate(`/attributes/${item.id}/edit`) : undefined}
-                  editTooltip="Edit Attribute (BD-I448)"
-                  onDelete={currentUser.role === 'Admin' ? () => handleTrash(item) : undefined}
-                  deleteTooltip="Move to Trash (BD-I451)"
-                  size="sm"
-                />
-              )
-            }
-          ]}
-        />
-      </ContainerCard>
-
-      {/* DETAIL DRAWER (BD-I450) */}
-      {selectedAttrForDetails && (
-        <SlideOverDrawer
-          isOpen={Boolean(selectedAttrForDetails)}
-          onClose={() => setSelectedAttrForDetails(null)}
-          title={`Attribute: ${selectedAttrForDetails.nameEn}`}
-          subtitle={`Code: ${selectedAttrForDetails.code}`}
-          width="lg"
-        >
-          <div className="space-y-4">
-            <div className="p-3 bg-slate-50 border border-[#E2E8F0] rounded-xl">
-              <span className="text-[10px] font-mono text-slate-400 uppercase">Arabic Name</span>
-              <p className="font-arabic font-bold text-sm text-slate-900 ">{selectedAttrForDetails.nameAr}</p>
+      <DataTable 
+        data={filteredItems}
+        keyExtractor={(item) => item.id}
+        emptyState={<EmptyState icon={<Tags />} title="No attributes found" action={<Button variant="secondary" onClick={() => navigate('/attributes/new')}>Add Attribute</Button>} />}
+        columns={[
+          { key: 'code', header: t('code'), render: (item) => (
+            <span 
+              onClick={() => setSelectedAttribute(item)}
+              className="font-mono text-xs font-bold text-accent cursor-pointer hover:underline"
+            >
+              {item.code}
+            </span>
+          )},
+          { key: 'name', header: t('name'), render: (item) => (
+            <div 
+              onClick={() => setSelectedAttribute(item)}
+              className="font-medium text-ink cursor-pointer hover:underline"
+            >
+              {item.name}
             </div>
-
-            <div className="space-y-2">
-              <h4 className="font-bold uppercase tracking-wider text-xs text-slate-700 ">
-                Configured Values ({selectedAttrForDetails.values.length})
-              </h4>
-              <div className="border border-[#E2E8F0] rounded-xl overflow-hidden divide-y divide-[#E2E8F0] ">
-                {selectedAttrForDetails.values.map(val => (
-                  <div key={val.id} className="p-2.5 bg-white flex items-center justify-between text-xs">
-                    <div>
-                      <span className="font-bold text-slate-900 ">{val.valueEn}</span>
-                      <span className="text-slate-500 font-arabic ms-2">({val.valueAr})</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] text-slate-400 font-mono">Order: {val.sortOrder}</span>
-                      <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
-                        val.active ? 'bg-emerald-100 text-emerald-800 ' : 'bg-slate-100 text-slate-500 '
-                      }`}>
-                        {val.active ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          )},
+          { key: 'values', header: 'Values (PPE-008)', render: (item) => (
+            <div className="flex gap-1 flex-wrap">
+              {item.values.slice(0, 4).map((v) => (
+                <span key={v.id} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-canvas border border-border text-body">
+                  {v.value}
+                </span>
+              ))}
+              {item.values.length > 4 && (
+                <span className="text-xs text-body font-semibold">+{item.values.length - 4} more</span>
+              )}
             </div>
-
-            <div className="space-y-2">
-              <h4 className="font-bold uppercase tracking-wider text-xs text-slate-700 ">
-                Linked Item Groups
-              </h4>
-              {(() => {
-                const linked = getLinkedGroups(selectedAttrForDetails.id);
-                if (linked.length === 0) {
-                  return <p className="text-slate-400 text-xs italic">Not currently used in any active Item Group.</p>;
-                }
-                return (
-                  <div className="space-y-1.5">
-                    {linked.map(g => (
-                      <div key={g.id} className="p-2.5 bg-slate-50 border border-[#E2E8F0] rounded-xl text-xs flex items-center justify-between">
-                        <span className="font-semibold text-slate-800 ">{g.nameEn}</span>
-                        <span className="font-mono text-[10px] text-teal-700 font-bold">{g.code}</span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
+          )},
+          { key: 'active', header: t('active'), render: (item) => (
+            <ToggleSwitch checked={item.active} onChange={() => handleToggleActive(item)} />
+          )},
+          { key: 'actions', header: '', className: 'text-right', render: (item) => (
+            <div className="flex justify-end gap-1.5">
+              <Button variant="ghost" size="sm" onClick={() => setSelectedAttribute(item)} title="View Details (PPE-011)">
+                <Eye className="w-3.5 h-3.5 mr-1" /> View
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => navigate(`/attributes/${item.id}/edit`)}>Edit</Button>
+              <Button variant="ghost" size="sm" className="text-safety-red hover:bg-safety-red/10" onClick={() => handleDelete(item)}>Delete</Button>
             </div>
-          </div>
-        </SlideOverDrawer>
-      )}
+          )}
+        ]}
+      />
 
-      {/* Admin Override Modal */}
-      <AdminOverrideModal
-        isOpen={overrideModal.isOpen}
-        title={overrideModal.title}
-        warningMessage={overrideModal.warning}
-        onConfirm={(reason) => {
-          overrideModal.action();
-          setOverrideModal({ isOpen: false, title: '', warning: '', action: () => {} });
+      {/* PPE-011 Attribute Details Modal */}
+      <AttributeDetailModal 
+        attribute={selectedAttribute} 
+        onClose={() => setSelectedAttribute(null)} 
+        onEdit={(attr) => {
+          setSelectedAttribute(null);
+          navigate(`/attributes/${attr.id}/edit`);
         }}
-        onCancel={() => setOverrideModal({ isOpen: false, title: '', warning: '', action: () => {} })}
+      />
+
+      {/* G2 In-Use Protection Override Modal */}
+      <OverrideModal 
+        isOpen={!!overrideTarget}
+        entityName={overrideTarget?.attribute.code || ''}
+        reasons={overrideTarget?.reasons || []}
+        actionLabel={overrideTarget?.action === 'delete' ? 'Override and Delete' : 'Override and Deactivate'}
+        onClose={() => setOverrideTarget(null)}
+        onConfirm={handleOverrideConfirm}
       />
     </div>
   );

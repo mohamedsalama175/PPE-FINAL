@@ -1,46 +1,20 @@
-import * as React from "react";
-import { Inbox } from "lucide-react";
-import { cn } from "../../lib/utils";
+import * as React from "react"
+import { cn } from "../../lib/utils"
 
-export interface EmptyStateProps {
-  icon?: React.ReactNode;
+interface EmptyStateProps {
+  icon: React.ReactNode;
   title: string;
   description?: string;
   action?: React.ReactNode;
-  compact?: boolean;
-  className?: string;
 }
 
-export const EmptyState: React.FC<EmptyStateProps> = ({
-  icon,
-  title,
-  description,
-  action,
-  compact = false,
-  className,
-}) => {
+export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <div
-      className={cn(
-        "flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-[#E2E8F0] bg-white shadow-sm",
-        compact ? "p-6" : "p-8 md:p-12",
-        className
-      )}
-    >
-      <div className="w-14 h-14 rounded-2xl bg-slate-50 ring-1 ring-slate-200 flex items-center justify-center text-slate-400 mb-4 shadow-sm shrink-0">
-        {icon || <Inbox className="w-7 h-7" />}
-      </div>
-      <h3 className="text-base font-bold text-[#1E293B] leading-tight">
-        {title}
-      </h3>
-      {description && (
-        <p className="text-xs text-[#64748B] mt-1.5 max-w-sm mx-auto leading-relaxed">
-          {description}
-        </p>
-      )}
-      {action && <div className="mt-5 flex items-center justify-center gap-3">{action}</div>}
+    <div className="flex flex-col items-center justify-center p-8 text-center bg-surface border border-border rounded-lg border-dashed">
+      <div className="text-body mb-3 bg-canvas p-3 rounded-full">{icon}</div>
+      <h3 className="text-sm font-semibold text-ink">{title}</h3>
+      {description && <p className="text-xs text-body mt-1 max-w-sm">{description}</p>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
-  );
-};
-
-export default EmptyState;
+  )
+}

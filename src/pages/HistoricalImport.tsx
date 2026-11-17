@@ -1,423 +1,311 @@
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
+import { FormSection } from '../components/ui/FormSection';
 import { Button } from '../components/ui/Button';
-import { StatusBadge } from '../components/ui/StatusBadge';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { KpiCard } from '../components/ui/KpiCard';
-import { useSwal } from '../lib/useSwal';
-import { 
-  FileSpreadsheet, Download, Upload, CheckCircle2, 
-  XCircle, AlertTriangle, ArrowRight, ShieldAlert, 
-  Clock, Info, ShieldCheck, Check, RotateCcw
-} from 'lucide-react';
-import { format, differenceInDays } from 'date-fns';
+import { downloadCsv, parseCsv } from '../lib/excelService';
+import { useToastStore } from '../store/toastStore';
+import { Upload, Download, CheckCircle, AlertTriangle, FileSpreadsheet, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
-interface ParsedImportRow {
-  id: string;
+interface ParsedHistoricalRow {
   employeeCode: string;
   itemCode: string;
-  variantKey: string;
+  locationCode: string;
   quantity: number;
   issueDate: string;
-  locationCode?: string;
+  expectedReplacementDate?: string;
   isValid: boolean;
-  error?: string;
-  calculatedReplacementDate?: string;
-  willBeStatus?: 'Overdue' | 'Upcoming' | 'Normal';
+  errors: string[];
   employeeId?: string;
+  ppeItemId?: string;
+  locationId?: string;
+}
+
+// Flexible date parser supporting YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY, and ISO formats
+function parseFlexibleDate(dateStr: string): { valid: boolean; isoDate?: string; error?: string } {
+  if (!dateStr || !dateStr.trim()) return { valid: false, error: 'Date is missing' };
+  const clean = dateStr.trim();
+
+  // Try direct date parsing
+  const d = new Date(clean);
+  if (!isNaN(d.getTime())) {
+    return { valid: true, isoDate: d.toISOString() };
+  }
+
+  // Try manual parts split
+  const parts = clean.split(/[-/.]/);
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      const parsed = new Date(Date.UTC(y, m, day));
+      if (!isNaN(parsed.getTime())) return { valid: true, isoDate: parsed.toISOString() };
+    } else if (parts[2].length === 4) {
+      const y = parseInt(parts[2], 10);
+      const p0 = parseInt(parts[0], 10);
+      const p1 = parseInt(parts[1], 10);
+      // Try MM/DD/YYYY
+      if (p0 <= 12) {
+        const parsed = new Date(Date.UTC(y, p0 - 1, p1));
+        if (!isNaN(parsed.getTime())) return { valid: true, isoDate: parsed.toISOString() };
+      }
+      // Try DD/MM/YYYY
+      if (p1 <= 12) {
+        const parsed = new Date(Date.UTC(y, p1 - 1, p0));
+        if (!isNaN(parsed.getTime())) return { valid: true, isoDate: parsed.toISOString() };
+      }
+    }
+  }
+
+  return { valid: false, error: `Invalid date format: "${clean}"` };
 }
 
 export default function HistoricalImport() {
   const navigate = useNavigate();
-  const { t, language } = useTranslation();
-  const { showConfirm, showToast } = useSwal();
+  const { employees, ppeItems, locations, currentUser, importHistoricalIssuances } = usePPEStore();
+  const addToast = useToastStore(s => s.addToast);
 
-  const { 
-    currentUser, 
-    employees, 
-    ppeItems, 
-    locations, 
-    settings, 
-    importHistoricalIssuances 
-  } = usePPEStore();
+  const [csvText, setCsvText] = React.useState('');
+  const [parsedRows, setParsedRows] = React.useState<ParsedHistoricalRow[]>([]);
+  const [hasImported, setHasImported] = React.useState(false);
 
-  const [parsedRows, setParsedRows] = React.useState<ParsedImportRow[]>([]);
-  const [hasPreview, setHasPreview] = React.useState(false);
-  const [submitting, setSubmitting] = React.useState(false);
-  const [importSummary, setImportSummary] = React.useState<{ importedCount: number; batchId: string } | null>(null);
-
-  const isAdmin = currentUser.role === 'Admin';
-
+  // Template download
   const handleDownloadTemplate = () => {
-    showToast('Historical_Issuances_Import_Template.xlsx downloaded', 'info');
+    const headers = ['Employee Code', 'Item Code', 'Location Code', 'Quantity', 'Issue Date (YYYY-MM-DD)', 'Replacement Due Date (YYYY-MM-DD)'];
+    const sampleRows = [
+      ['EMP-004', 'HELM-YEL', 'HQ-WH-01', 1, '2023-05-15', '2026-05-15'],
+      ['EMP-005', 'BOOT-S3-41', 'HQ-WH-01', 1, '2024-01-10', '2025-01-10'],
+      ['EMP-006', 'VEST-YEL', 'HQ-WH-01', 2, '2025-02-01', '2025-08-01']
+    ];
+    downloadCsv('ppe_historical_import_template', headers, sampleRows);
+    addToast('Template CSV downloaded.', 'success');
   };
 
-  const handleLoadDemoData = () => {
-    const today = new Date();
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    const rawDemo = [
-      {
-        id: '1',
-        employeeCode: employees[0]?.employeeCode || 'EMP-001',
-        itemCode: ppeItems[0]?.itemCode || 'HLM-001',
-        variantKey: 'Yellow',
-        quantity: 1,
-        issueDate: '2025-01-15' // ~1.5 years ago -> Overdue
-      },
-      {
-        id: '2',
-        employeeCode: employees[1]?.employeeCode || 'EMP-002',
-        itemCode: ppeItems[1]?.itemCode || 'GLV-001',
-        variantKey: 'Size L',
-        quantity: 2,
-        issueDate: '2026-08-01' // ~3 months ago -> Upcoming
-      },
-      {
-        id: '3',
-        employeeCode: employees[2]?.employeeCode || 'EMP-003',
-        itemCode: ppeItems[2]?.itemCode || 'FTW-001',
-        variantKey: '42 / Male',
-        quantity: 1,
-        issueDate: '2026-09-15'
-      },
-      {
-        id: '4',
-        employeeCode: 'EMP-999-NONEXISTENT', // Invalid employee
-        itemCode: ppeItems[0]?.itemCode || 'HLM-001',
-        variantKey: 'White',
-        quantity: 1,
-        issueDate: '2026-05-10'
-      },
-      {
-        id: '5',
-        employeeCode: employees[0]?.employeeCode || 'EMP-001',
-        itemCode: 'INVALID-ITEM-CODE', // Invalid item
-        variantKey: 'Standard',
-        quantity: 1,
-        issueDate: '2026-03-20'
-      },
-      {
-        id: '6',
-        employeeCode: employees[0]?.employeeCode || 'EMP-001',
-        itemCode: ppeItems[0]?.itemCode || 'HLM-001',
-        variantKey: 'Yellow',
-        quantity: 1,
-        issueDate: '2027-01-01' // Future date error
-      }
-    ];
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setCsvText(content);
+      processCsvContent(content);
+    };
+    reader.readAsText(file);
+  };
 
-    // Validate rows
-    const processed: ParsedImportRow[] = rawDemo.map(row => {
-      const emp = employees.find(e => e.employeeCode.toLowerCase() === row.employeeCode.toLowerCase());
-      const ppe = ppeItems.find(p => p.itemCode.toLowerCase() === row.itemCode.toLowerCase());
-      const isFuture = new Date(row.issueDate) > today;
+  const processCsvContent = (content: string) => {
+    const { headers, rows } = parseCsv(content);
+    if (rows.length === 0) {
+      addToast('No data rows found in the CSV.', 'error');
+      return;
+    }
 
-      let isValid = true;
-      let error = '';
+    const validated: ParsedHistoricalRow[] = rows.map((r) => {
+      const empCode = r['Employee Code'] || r['employeeCode'] || Object.values(r)[0] || '';
+      const itCode = r['Item Code'] || r['itemCode'] || Object.values(r)[1] || '';
+      const locCode = r['Location Code'] || r['locationCode'] || Object.values(r)[2] || '';
+      const qtyStr = r['Quantity'] || r['quantity'] || Object.values(r)[3] || '1';
+      const issDate = r['Issue Date (YYYY-MM-DD)'] || r['issueDate'] || Object.values(r)[4] || '';
+      const dueDate = r['Replacement Due Date (YYYY-MM-DD)'] || r['expectedReplacementDate'] || Object.values(r)[5] || '';
 
-      if (!emp) {
-        isValid = false;
-        error = `Employee ID "${row.employeeCode}" not found in Employee Master.`;
- } else if (!ppe) {
- isValid = false;
- error = `Item Code "${row.itemCode}" not found in PPE Catalog.`;
- } else if (isFuture) {
- isValid = false;
- error = `Issue date (${row.issueDate}) cannot be in the future.`;
-      } else if (row.quantity <= 0) {
-        isValid = false;
-        error = 'Quantity must be greater than zero.';
+      const errors: string[] = [];
+      const emp = employees.find(e => e.employeeCode.toUpperCase() === empCode.trim().toUpperCase());
+      if (!emp) errors.push(`Unknown Employee Code: ${empCode}`);
+
+      const item = ppeItems.find(p => p.itemCode.toUpperCase() === itCode.trim().toUpperCase());
+      if (!item) errors.push(`Unknown Item Code: ${itCode}`);
+
+      const loc = locations.find(l => l.code.toUpperCase() === locCode.trim().toUpperCase());
+      if (!loc) errors.push(`Unknown Location Code: ${locCode}`);
+
+      const qty = parseInt(qtyStr, 10);
+      if (isNaN(qty) || qty <= 0) errors.push(`Invalid quantity: ${qtyStr}`);
+
+      // Validate dates
+      const parsedIssueDate = parseFlexibleDate(issDate);
+      if (!parsedIssueDate.valid) {
+        errors.push(`Issue Date error: ${parsedIssueDate.error || 'Invalid date'}`);
       }
 
-      let calculatedReplacementDate: string | undefined;
-      let willBeStatus: 'Overdue' | 'Upcoming' | 'Normal' | undefined;
-
-      if (isValid && ppe) {
-        const issueD = new Date(row.issueDate);
-        let replD = new Date(issueD);
-        if (ppe.lifespanUnit === 'Days') replD.setDate(replD.getDate() + ppe.lifespanValue);
-        else if (ppe.lifespanUnit === 'Months') replD.setMonth(replD.getMonth() + ppe.lifespanValue);
-        else if (ppe.lifespanUnit === 'Years') replD.setFullYear(replD.getFullYear() + ppe.lifespanValue);
-
-        calculatedReplacementDate = replD.toISOString().split('T')[0];
-        const daysDiff = differenceInDays(replD, today);
-
-        if (daysDiff < 0) {
-          willBeStatus = 'Overdue';
-        } else if (daysDiff <= (settings.reminderLeadTimePerSite[emp?.site || 'Cairo Site'] || 14)) {
-          willBeStatus = 'Upcoming';
+      let parsedDueDateIso: string | undefined = undefined;
+      if (dueDate && dueDate.trim()) {
+        const parsedDueDate = parseFlexibleDate(dueDate);
+        if (!parsedDueDate.valid) {
+          errors.push(`Due Date error: ${parsedDueDate.error || 'Invalid date'}`);
         } else {
-          willBeStatus = 'Normal';
+          parsedDueDateIso = parsedDueDate.isoDate;
         }
       }
 
       return {
-        ...row,
-        isValid,
-        error: error || undefined,
+        employeeCode: empCode,
+        itemCode: itCode,
+        locationCode: locCode,
+        quantity: isNaN(qty) ? 1 : qty,
+        issueDate: parsedIssueDate.isoDate || issDate,
+        expectedReplacementDate: parsedDueDateIso,
+        isValid: errors.length === 0,
+        errors,
         employeeId: emp?.id,
-        calculatedReplacementDate,
-        willBeStatus
+        ppeItemId: item?.id,
+        locationId: loc?.id
       };
     });
 
-    setParsedRows(processed);
-    setHasPreview(true);
-    showToast('Simulation loaded: 6 rows parsed (3 valid, 3 flagged errors).', 'info');
+    setParsedRows(validated);
+    setHasImported(false);
   };
 
-  const validRows = React.useMemo(() => parsedRows.filter(r => r.isValid), [parsedRows]);
-  const errorRows = React.useMemo(() => parsedRows.filter(r => !r.isValid), [parsedRows]);
-  const upcomingCount = React.useMemo(() => validRows.filter(r => r.willBeStatus === 'Upcoming').length, [validRows]);
-  const overdueCount = React.useMemo(() => validRows.filter(r => r.willBeStatus === 'Overdue').length, [validRows]);
-
-  const handleDownloadErrorReport = () => {
-    showToast('Historical_Import_Errors.xlsx downloaded', 'info');
-  };
-
-  const handleExecuteImport = async () => {
+  const handleExecuteImport = () => {
+    const validRows = parsedRows.filter(r => r.isValid);
     if (validRows.length === 0) {
-      showToast('No valid rows available to import.', 'error');
+      addToast('No valid rows available to import.', 'error');
       return;
     }
 
-    const confirmed = await showConfirm(
-      'Confirm Historical Import',
-      `Are you sure you want to import ${validRows.length} valid historical issuances?`,
-      'Import Records',
-      false
-    );
-    if (!confirmed) return;
-
-    setSubmitting(true);
-    const rowsToImport = validRows.map(r => ({
-      employeeId: r.employeeId!,
-      itemCode: r.itemCode,
-      variantKey: r.variantKey,
+    const records = validRows.map(r => ({
+      employeeId: r.employeeId,
+      ppeItemId: r.ppeItemId,
+      locationId: r.locationId,
       quantity: r.quantity,
-      issueDate: r.issueDate
+      issueDate: r.issueDate,
+      expectedReplacementDate: r.expectedReplacementDate,
+      reference: `HIST-${Date.now().toString().slice(-6)}`
     }));
 
-    const result = importHistoricalIssuances(rowsToImport);
-    setSubmitting(false);
-    setImportSummary(result);
-    showToast(`Successfully imported ${result.importedCount} historical issuances.`, 'success');
+    const res = importHistoricalIssuances(records, currentUser.id);
+    setHasImported(true);
+    addToast(`Successfully imported ${res.count} historical issuance records with zero stock deduction (PPE-044).`, 'success');
   };
 
+  const validCount = parsedRows.filter(r => r.isValid).length;
+  const invalidCount = parsedRows.length - validCount;
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Import Historical Issuances from Excel (NEW-09)"
-        subtitle="Migrate pre-existing employee PPE holdings without stock deduction, tagged 'Imported' with automated replacement scheduling"
- />
+    <div className="max-w-4xl space-y-6 pb-20">
+      <PageHeader 
+        title="Historical PPE Issuance Import (PPE-044)" 
+        subtitle="Import legacy employee equipment custody records with zero inventory stock deduction"
+        actions={
+          <Button variant="secondary" onClick={handleDownloadTemplate}>
+            <Download className="w-4 h-4 mr-2" /> Download CSV Template
+          </Button>
+        }
+      />
 
- {!isAdmin && (
- <div className="p-4 bg-amber-50  border border-amber-200  rounded-md flex items-start gap-3">
- <AlertTriangle className="w-5 h-5 text-amber-600  flex-shrink-0 mt-0.5" />
- <div className="text-xs text-amber-800 ">
- <span className="font-bold">Administrative Permission Notice:</span> You are viewing the import workspace. In production, this batch tool is restricted to system administrators.
- </div>
- </div>
- )}
+      {/* Instructions Card */}
+      <div className="bg-surface border border-border rounded-lg p-5">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-body mb-2 flex items-center gap-2">
+          <FileSpreadsheet className="w-4 h-4 text-accent" />
+          Import Protocol Guidelines (Rule G1 & PPE-044)
+        </h3>
+        <ul className="text-xs text-body space-y-1.5 list-disc pl-5">
+          <li>Imported equipment is tagged with an <strong className="text-ink">Imported</strong> badge across employee timelines and audit views.</li>
+          <li><strong className="text-safety-red font-semibold">Zero Stock Deduction:</strong> Historical issuances will NOT alter current inventory balances or batches.</li>
+          <li>Codes must match existing active records: Employee Code (e.g. EMP-004), Item Code (e.g. HELM-YEL), Location Code (e.g. HQ-WH-01).</li>
+        </ul>
 
- {importSummary ? (
- <ContainerCard className="p-8 text-center space-y-4">
- <CheckCircle2 className="w-12 h-12 text-emerald-600  mx-auto" />
- <h3 className="text-base font-bold text-slate-900 ">Historical Import Completed</h3>
- <p className="text-xs text-slate-600  max-w-md mx-auto">
- Successfully imported <span className="font-bold text-emerald-700 ">{importSummary.importedCount} historical records</span> under Batch ID{' '}
-            <span className="font-mono text-slate-800 font-semibold">{importSummary.batchId}</span>.
-          </p>
-          <div className="flex justify-center gap-3 pt-2">
-            <Button variant="secondary" onClick={() => {
-              setImportSummary(null);
-              setHasPreview(false);
-              setParsedRows([]);
-            }}>
-              Import Another File
-            </Button>
-            <Button variant="primary" onClick={() => navigate('/issuances/replacements-due')}>
-              View Replacements Due
-            </Button>
+        {/* File upload input */}
+        <div className="mt-5 flex items-center gap-4">
+          <label className="inline-flex items-center justify-center px-4 py-2 border border-border rounded text-sm font-semibold bg-canvas hover:bg-surface cursor-pointer shadow-sm">
+            <Upload className="w-4 h-4 mr-2 text-accent" /> Select CSV File
+            <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+          </label>
+          <span className="text-xs text-body">or paste CSV content below</span>
+        </div>
+      </div>
+
+      {/* CSV Content Paste Area */}
+      <div className="bg-surface border border-border rounded-lg p-5">
+        <label className="block text-xs font-bold uppercase tracking-wider text-body mb-2">Raw CSV Text Content</label>
+        <textarea
+          rows={5}
+          value={csvText}
+          onChange={(e) => {
+            setCsvText(e.target.value);
+            if (e.target.value.trim().length > 10) {
+              processCsvContent(e.target.value);
+            }
+          }}
+          placeholder="Paste CSV rows here..."
+          className="w-full text-xs font-mono p-3 rounded border border-border bg-canvas focus:outline-none focus:ring-1 focus:ring-accent"
+        />
+      </div>
+
+      {/* Validation & Preview Table */}
+      {parsedRows.length > 0 && (
+        <div className="bg-surface border border-border rounded-lg overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-border bg-canvas flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-body">Parsed Records Preview ({parsedRows.length})</span>
+              <span className="text-xs font-semibold text-safety-green bg-green-50 px-2 py-0.5 rounded border border-green-200">
+                {validCount} Ready
+              </span>
+              {invalidCount > 0 && (
+                <span className="text-xs font-semibold text-safety-red bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                  {invalidCount} Errors
+                </span>
+              )}
+            </div>
+
+            {!hasImported ? (
+              <Button onClick={handleExecuteImport} disabled={validCount === 0}>
+                Execute Import ({validCount} Records)
+              </Button>
+            ) : (
+              <Button variant="secondary" onClick={() => navigate('/issuances')}>
+                View in Issuances <ArrowRight className="w-3.5 h-3.5 ml-1" />
+              </Button>
+            )}
           </div>
-        </ContainerCard>
-      ) : (
-        <div className="space-y-6">
-          {/* Action Card: Upload & Demo Simulation */}
-          <ContainerCard className="p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 " />
-                  Excel File Upload & Verification Step
-                </h3>
-                <p className="text-xs text-slate-500 ">
-                  Required columns: Employee ID, Item Code, Variant, Quantity, Issue Date (YYYY-MM-DD).
-                </p>
-              </div>
 
-              <div className="flex items-center gap-2">
-                <Button variant="secondary" size="sm" onClick={handleDownloadTemplate}>
-                  <Download className="w-4 h-4 me-1.5" /> Template (.xlsx)
-                </Button>
-                <Button variant="primary" size="sm" onClick={handleLoadDemoData}>
-                  <Upload className="w-4 h-4 me-1.5" /> Load Demo Excel Simulation
-                </Button>
-              </div>
-            </div>
-
-            {/* Invariants Box */}
-            <div className="bg-slate-50 border border-slate-200 rounded-md p-4 text-xs text-slate-600 space-y-2">
-              <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                <Info className="w-4 h-4 text-slate-500 " /> Strict Historical Migration Invariants (NEW-09)
-              </h4>
-              <ul className="list-disc ps-4 space-y-1 text-[11px]">
-                <li>
-                  <span className="font-semibold text-slate-800 ">Zero Stock Deduction:</span> Importing historical issuances does NOT reduce warehouse stock (stock must be entered via Opening Balance NEW-01).
-                </li>
-                <li>
-                  <span className="font-semibold text-slate-800 ">Signature Exemption:</span> Records are tagged with an <span className="font-mono text-slate-700 bg-white px-1 border border-slate-200 rounded">Imported</span> badge and require no signatures.
-                </li>
-                <li>
-                  <span className="font-semibold text-slate-800 ">Automatic Replacement Calculations:</span> Expected Replacement Date is calculated as <span className="font-mono">Issue Date + Current Lifespan</span>.
-                </li>
-                <li>
-                  <span className="font-semibold text-slate-800 ">No Spam Reminders:</span> Historical records that are already overdue appear in Replacements Due immediately, but send NO reminder emails.
-                </li>
-              </ul>
-            </div>
-          </ContainerCard>
-
-          {/* Validation & Preview Step */}
-          {hasPreview && (
-            <div className="space-y-4">
-              {/* Summary KPIs */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <KpiCard
-                  title="Valid Records"
-                  value={validRows.length}
-                  color="success"
-                  icon={<CheckCircle2 className="w-5 h-5 text-emerald-600 " />}
-                />
-                <KpiCard
-                  title="Error Records"
-                  value={errorRows.length}
-                  color="danger"
-                  icon={<XCircle className="w-5 h-5 text-rose-600 " />}
-                />
-                <KpiCard
-                  title="Will Be Upcoming"
-                  value={upcomingCount}
-                  color="warning"
-                  icon={<Clock className="w-5 h-5 text-amber-600 " />}
-                />
-                <KpiCard
-                  title="Will Be Overdue"
-                  value={overdueCount}
-                  color="danger"
-                  icon={<AlertTriangle className="w-5 h-5 text-rose-600 " />}
-                />
-              </div>
-
-              {/* Data Table */}
-              <ContainerCard noPadding className="overflow-hidden">
-                <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                    Parsed Import Preview ({parsedRows.length} total rows)
-                  </h4>
-                  {errorRows.length > 0 && (
-                    <Button variant="secondary" size="sm" onClick={handleDownloadErrorReport}>
-                      <Download className="w-3.5 h-3.5 me-1 text-red-600 " /> Download Error Report ({errorRows.length} errors)
-                    </Button>
-                  )}
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-start">
-                    <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200 ">
-                      <tr>
-                        <th className="p-3">Status</th>
-                        <th className="p-3">Employee ID</th>
-                        <th className="p-3">Item Code</th>
-                        <th className="p-3">Variant</th>
-                        <th className="p-3 w-16 text-center">Qty</th>
-                        <th className="p-3">Issue Date</th>
-                        <th className="p-3">Calculated Replacement</th>
-                        <th className="p-3">Validation Result</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 ">
-                      {parsedRows.map(row => (
-                        <tr key={row.id} className={row.isValid ? 'hover:bg-slate-50 ' : 'bg-red-50/40 '}>
-                          <td className="p-3">
-                            {row.isValid ? (
-                              <CheckCircle2 className="w-4 h-4 text-emerald-600 " />
-                            ) : (
-                              <XCircle className="w-4 h-4 text-red-600 " />
-                            )}
-                          </td>
-                          <td className="p-3 font-mono font-medium text-slate-800 ">{row.employeeCode}</td>
-                          <td className="p-3 font-mono font-bold text-slate-900 ">{row.itemCode}</td>
-                          <td className="p-3 text-slate-600 ">{row.variantKey}</td>
-                          <td className="p-3 text-center font-mono font-bold text-slate-800 ">{row.quantity}</td>
-                          <td className="p-3 text-slate-700 ">{row.issueDate}</td>
-                          <td className="p-3">
-                            {row.calculatedReplacementDate ? (
-                              <div>
-                                <span className="font-mono font-medium text-slate-800 ">{row.calculatedReplacementDate}</span>
-                                {row.willBeStatus === 'Overdue' && (
-                                  <span className="ms-1.5 px-1 py-0.2 text-[9px] font-bold rounded bg-red-100 text-red-700 ">
-                                    Overdue
-                                  </span>
-                                )}
-                                {row.willBeStatus === 'Upcoming' && (
-                                  <span className="ms-1.5 px-1 py-0.2 text-[9px] font-bold rounded bg-amber-100 text-amber-800 ">
-                                    Upcoming
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 ">—</span>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            {row.isValid ? (
-                              <span className="text-emerald-700 font-medium">Valid row</span>
-                            ) : (
-                              <span className="text-red-700 font-semibold">{row.error}</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="p-4 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-xs text-slate-500 ">
-                    {validRows.length} valid row(s) ready to import • {errorRows.length} error row(s) will be skipped
-                  </span>
-                  <div className="flex gap-2">
-                    <Button variant="secondary" onClick={() => setHasPreview(false)}>
-                      Clear Preview
-                    </Button>
-                    <Button
-                      variant="primary"
-                      onClick={handleExecuteImport}
-                      disabled={submitting || validRows.length === 0}
-                    >
-                      <Check className="w-4 h-4 me-1.5" /> Confirm & Import {validRows.length} Valid Records
-                    </Button>
-                  </div>
-                </div>
-              </ContainerCard>
-            </div>
-          )}
+          <div className="max-h-80 overflow-y-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-canvas border-b border-border text-body uppercase font-bold sticky top-0">
+                <tr>
+                  <th className="p-2.5">Status</th>
+                  <th className="p-2.5">Employee</th>
+                  <th className="p-2.5">Item</th>
+                  <th className="p-2.5">Location</th>
+                  <th className="p-2.5 text-center">Qty</th>
+                  <th className="p-2.5">Issue Date</th>
+                  <th className="p-2.5">Due Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {parsedRows.map((row, idx) => (
+                  <tr key={idx} className={row.isValid ? 'hover:bg-canvas/50' : 'bg-red-50/50'}>
+                    <td className="p-2.5">
+                      {row.isValid ? (
+                        <span className="text-safety-green flex items-center gap-1 font-bold">
+                          <CheckCircle className="w-3.5 h-3.5" /> Valid
+                        </span>
+                      ) : (
+                        <div className="text-safety-red font-medium">
+                          <span className="flex items-center gap-1 font-bold">
+                            <AlertTriangle className="w-3.5 h-3.5" /> Invalid
+                          </span>
+                          <span className="text-[10px] block mt-0.5">{row.errors.join('; ')}</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-2.5 font-mono font-semibold">{row.employeeCode}</td>
+                    <td className="p-2.5 font-mono font-semibold">{row.itemCode}</td>
+                    <td className="p-2.5 font-mono">{row.locationCode}</td>
+                    <td className="p-2.5 text-center font-bold">{row.quantity}</td>
+                    <td className="p-2.5">{row.issueDate}</td>
+                    <td className="p-2.5">{row.expectedReplacementDate || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
   );
 }
+

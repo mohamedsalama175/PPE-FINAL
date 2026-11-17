@@ -1,1117 +1,385 @@
 import { 
   JobPosition, Location, Attribute, ItemGroup, PPEItem, Kit, Employee, 
-  Batch, StockBalance, StockAdjustment, Issuance, IssuanceReturn, VisitorLoan, ScrapEntry, 
-  OpeningBalance, AuditLog, TrashItem, InAppNotification, ModuleSettings 
+  StockBalance, StockAdjustment, Issuance, IssuanceReturn, 
+  ScrapEntry, ModuleSettings, OpeningBalance, Batch, AuditLog,
+  UnitOfMeasure, SerialUnit, SerialEvent
 } from '../types';
 
 export const mockJobPositions: JobPosition[] = [
-  { id: 'jp-1', code: 'JP-001', nameEn: 'Electrical Engineer', nameAr: 'مهندس كهرباء', active: true },
-  { id: 'jp-2', code: 'JP-002', nameEn: 'Mechanical Engineer', nameAr: 'مهندس ميكانيكا', active: true },
-  { id: 'jp-3', code: 'JP-003', nameEn: 'Site Supervisor', nameAr: 'مشرف موقع', active: true },
-  { id: 'jp-4', code: 'JP-004', nameEn: 'Welder', nameAr: 'لحام', active: true },
-  { id: 'jp-5', code: 'JP-005', nameEn: 'Scaffolder', nameAr: 'سقّال', active: true },
-  { id: 'jp-6', code: 'JP-006', nameEn: 'Laboratory Technician', nameAr: 'فني مختبر', active: true },
-  { id: 'jp-7', code: 'JP-007', nameEn: 'Warehouse Operator', nameAr: 'مشغل مستودع', active: true },
-  { id: 'jp-8', code: 'JP-008', nameEn: 'HSE Officer', nameAr: 'مسؤول سلامة', active: true },
-  { id: 'jp-9', code: 'JP-009', nameEn: 'Driver', nameAr: 'سائق', active: true },
-  { id: 'jp-10', code: 'JP-010', nameEn: 'General Laborer', nameAr: 'عامل عام', active: true },
+  { id: 'jp-1', code: 'JP-001', name: 'Electrical Engineer', active: true },
+  { id: 'jp-2', code: 'JP-002', name: 'Mechanical Engineer', active: true },
+  { id: 'jp-3', code: 'JP-003', name: 'Site Supervisor', active: true },
+  { id: 'jp-4', code: 'JP-004', name: 'Welder', active: true },
+  { id: 'jp-5', code: 'JP-005', name: 'Scaffolder', active: true },
+  { id: 'jp-6', code: 'JP-006', name: 'Laboratory Technician', active: true },
+  { id: 'jp-7', code: 'JP-007', name: 'Warehouse Operator', active: true },
+  { id: 'jp-8', code: 'JP-008', name: 'HSE Officer', active: true },
+  { id: 'jp-9', code: 'JP-009', name: 'Driver', active: true },
+  { id: 'jp-10', code: 'JP-010', name: 'General Laborer', active: true },
 ];
 
 export const mockLocations: Location[] = [
-  {
-    id: 'loc-cai-new',
-    code: 'LOC-CAI-NEW',
-    nameEn: 'Cairo Main Store',
-    nameAr: 'مستودع القاهرة الرئيسي',
-    site: 'Cairo Site',
-    locationType: 'Central Warehouse',
-    stockCondition: 'New',
-    description: 'Central distribution hub for brand new PPE inventory',
-    capacityUnits: 500,
-    address: 'Warehouse Block 1, Cairo Logistics Zone',
-    assignedStoreKeeperIds: ['emp-8'], // Sam
-    openingBalanceStatus: 'Closed',
-    hasHeldStock: true,
-    active: true
-  },
-  {
-    id: 'loc-cai-usd',
-    code: 'LOC-CAI-USD',
-    nameEn: 'Cairo Used Pool',
-    nameAr: 'مخزن المستعمل - القاهرة',
-    site: 'Cairo Site',
-    locationType: 'Site Store',
-    stockCondition: 'Used',
-    description: 'Reused stock pool for secondary issuances and contractor loans',
-    capacityUnits: 150,
-    address: 'Staging Bay 3, Cairo Site',
-    assignedStoreKeeperIds: ['emp-8'], // Sam
-    openingBalanceStatus: 'Closed',
-    hasHeldStock: true,
-    active: true
-  },
-  {
-    id: 'loc-cai-scr',
-    code: 'LOC-CAI-SCR',
-    nameEn: 'Cairo Scrap Yard',
-    nameAr: 'ساحة التخريد - القاهرة',
-    site: 'Cairo Site',
-    locationType: 'General',
-    stockCondition: 'Scrap',
-    description: 'Designated disposal area for damaged and end-of-life PPE',
-    capacityUnits: 0,
-    address: 'Hazardous Waste & Scrap Compound, Cairo Site',
-    assignedStoreKeeperIds: [],
-    openingBalanceStatus: 'Closed',
-    hasHeldStock: true,
-    active: true
-  },
-  {
-    id: 'loc-alx-new',
-    code: 'LOC-ALX-NEW',
-    nameEn: 'Alexandria Site Store',
-    nameAr: 'مستودع موقع الإسكندرية',
-    site: 'Alexandria Site',
-    locationType: 'Site Store',
-    stockCondition: 'New',
-    description: 'Primary on-site store for Alexandria manufacturing plant',
-    capacityUnits: 200,
-    address: 'Plant 4, Alexandria Free Zone',
-    assignedStoreKeeperIds: ['emp-11'], // Mona
-    openingBalanceStatus: 'Open', // Open for testing NEW-01 Opening Balance
-    hasHeldStock: false,
-    active: true
-  },
-  {
-    id: 'loc-alx-usd',
-    code: 'LOC-ALX-USD',
-    nameEn: 'Alexandria Used Store',
-    nameAr: 'مخزن المستعمل - الإسكندرية',
-    site: 'Alexandria Site',
-    locationType: 'Site Store',
-    stockCondition: 'Used',
-    description: 'Reused pool for Alexandria maintenance and temporary workers',
-    capacityUnits: 80,
-    address: 'Annex B, Alexandria Plant',
-    assignedStoreKeeperIds: ['emp-11'], // Mona
-    openingBalanceStatus: 'Open',
-    hasHeldStock: false,
-    active: true
-  },
-  {
-    id: 'loc-main-gen',
-    code: 'LOC-MAIN-GEN',
-    nameEn: 'Main Campus Storage',
-    nameAr: 'مستودع المجمع الرئيسي',
-    site: 'Main Campus',
-    locationType: 'Central Warehouse',
-    stockCondition: 'New',
-    description: 'Headquarters supply depot and executive safety kit repository',
-    capacityUnits: 300,
-    address: 'HQ Tower Basement Level 2',
-    assignedStoreKeeperIds: ['emp-11'],
-    openingBalanceStatus: 'Closed',
-    hasHeldStock: true,
-    active: true
-  }
+  { id: 'loc-1', code: 'HQ-WH-01', name: 'Main Warehouse', site: 'Main Campus', locationType: 'Central Warehouse', stockCondition: 'New', description: 'Primary central receiving store', capacityUnits: 1000, address: 'Site A, Block 1', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-2', code: 'HQ-WH-02', name: 'Secondary Warehouse', site: 'North Field', locationType: 'Site Store', stockCondition: 'New', description: 'Site store for North Field', capacityUnits: 500, address: 'North Field Depot', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-3', code: 'SITEB-01', name: 'Site B Store', site: 'South Field', locationType: 'Site Store', stockCondition: 'New', description: 'Sub-store on South Field', capacityUnits: 200, address: 'Site B Storehouse', active: true, assignedStoreKeeperIds: [] },
+  { id: 'loc-4', code: 'SITEC-01', name: 'Site C Store', site: 'Main Campus', locationType: 'General', stockCondition: 'New', description: 'General utility store', capacityUnits: 100, address: 'Site C Depot', active: true, assignedStoreKeeperIds: [] },
+  { id: 'loc-5', code: 'USED-WH-01', name: 'Used Equipment Store', site: 'Main Campus', locationType: 'Used', stockCondition: 'Used', description: 'Restored and inspected reusable PPE', capacityUnits: 500, address: 'Site A, Shed 2', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-6', code: 'SCRAP-YD-01', name: 'HSE Scrap Yard', site: 'Main Campus', locationType: 'Scrap', stockCondition: 'Scrap', description: 'Damaged and decommissioned items awaiting disposal', capacityUnits: 400, address: 'Disposal Yard 4', active: true, assignedStoreKeeperIds: ['emp-8'] },
 ];
 
 export const mockAttributes: Attribute[] = [
-  {
-    id: 'attr-gender',
-    code: 'GENDER',
-    nameEn: 'Gender',
-    nameAr: 'الجنس',
-    active: true,
-    values: [
-      { id: 'val-g-m', valueEn: 'Male', valueAr: 'ذكر', sortOrder: 1, active: true },
-      { id: 'val-g-f', valueEn: 'Female', valueAr: 'أنثى', sortOrder: 2, active: true },
-      { id: 'val-g-u', valueEn: 'Unisex', valueAr: 'للجنسين', sortOrder: 3, active: true }
-    ]
-  },
-  {
-    id: 'attr-size',
-    code: 'SIZE',
-    nameEn: 'Size',
-    nameAr: 'المقاس',
-    active: true,
-    values: [
-      { id: 'val-s-s', valueEn: 'S', valueAr: 'صغير', sortOrder: 1, active: true },
-      { id: 'val-s-m', valueEn: 'M', valueAr: 'متوسط', sortOrder: 2, active: true },
-      { id: 'val-s-l', valueEn: 'L', valueAr: 'كبير', sortOrder: 3, active: true },
-      { id: 'val-s-xl', valueEn: 'XL', valueAr: 'كبير جداً', sortOrder: 4, active: true },
-      { id: 'val-s-xxl', valueEn: 'XXL', valueAr: 'كبير جداً مضاعف', sortOrder: 5, active: true },
-      { id: 'val-s-42', valueEn: '42', valueAr: '42', sortOrder: 6, active: true },
-      { id: 'val-s-44', valueEn: '44', valueAr: '44', sortOrder: 7, active: true }
-    ]
-  },
-  {
-    id: 'attr-color',
-    code: 'COLOR',
-    nameEn: 'Color',
-    nameAr: 'اللون',
-    active: true,
-    values: [
-      { id: 'val-c-yel', valueEn: 'Yellow', valueAr: 'أصفر', sortOrder: 1, active: true },
-      { id: 'val-c-wht', valueEn: 'White', valueAr: 'أبيض', sortOrder: 2, active: true },
-      { id: 'val-c-blu', valueEn: 'Blue', valueAr: 'أزرق', sortOrder: 3, active: true },
-      { id: 'val-c-org', valueEn: 'Hi-Vis Orange', valueAr: 'برتقالي عاكس', sortOrder: 4, active: true }
-    ]
-  }
+  { id: 'attr-1', code: 'SIZE-CLOTHING', name: 'Clothing Size', active: true, values: [
+    { id: 'val-1-1', value: 'S', sortOrder: 1 }, { id: 'val-1-2', value: 'M', sortOrder: 2 }, { id: 'val-1-3', value: 'L', sortOrder: 3 }, { id: 'val-1-4', value: 'XL', sortOrder: 4 }
+  ]},
+  { id: 'attr-2', code: 'SIZE-SHOES', name: 'Shoe Size', active: true, values: [
+    { id: 'val-2-1', value: '39', sortOrder: 1 }, { id: 'val-2-2', value: '40', sortOrder: 2 }, { id: 'val-2-3', value: '41', sortOrder: 3 }, { id: 'val-2-4', value: '42', sortOrder: 4 }
+  ]},
+  { id: 'attr-3', code: 'COLOR', name: 'Color', active: true, values: [
+    { id: 'val-3-1', value: 'Red', sortOrder: 1 }, { id: 'val-3-2', value: 'Blue', sortOrder: 2 }, { id: 'val-3-3', value: 'Yellow', sortOrder: 3 }
+  ]},
+  { id: 'attr-4', code: 'GLOVE-SIZE', name: 'Glove Size', active: true, values: [
+    { id: 'val-4-1', value: '8', sortOrder: 1 }, { id: 'val-4-2', value: '9', sortOrder: 2 }, { id: 'val-4-3', value: '10', sortOrder: 3 }
+  ]},
+  { id: 'attr-5', code: 'MATERIAL', name: 'Material', active: true, values: [
+    { id: 'val-5-1', value: 'Cotton', sortOrder: 1 }, { id: 'val-5-2', value: 'Leather', sortOrder: 2 }
+  ]},
+  { id: 'attr-6', code: 'FILTER-TYPE', name: 'Filter Type', active: true, values: [
+    { id: 'val-6-1', value: 'P1', sortOrder: 1 }, { id: 'val-6-2', value: 'P2', sortOrder: 2 }, { id: 'val-6-3', value: 'P3', sortOrder: 3 }
+  ]},
+  { id: 'attr-7', code: 'GENDER', name: 'Gender Variant', active: true, values: [
+    { id: 'val-7-1', value: 'Male', sortOrder: 1 }, { id: 'val-7-2', value: 'Female', sortOrder: 2 }, { id: 'val-7-3', value: 'Unisex', sortOrder: 3 }
+  ]},
 ];
 
 export const mockItemGroups: ItemGroup[] = [
-  {
-    id: 'grp-helmets',
-    code: 'HELMETS',
-    nameEn: 'Safety Helmets & Headgear',
-    nameAr: 'خوذ وأغطية الرأس للسلامة',
-    assignedAttributeIds: ['attr-color'],
-    requiresGenderMatch: false,
-    active: true
-  },
-  {
-    id: 'grp-gloves',
-    code: 'GLOVES',
-    nameEn: 'Hand Protection & Heavy Gloves',
-    nameAr: 'قفازات وحماية اليدين',
-    assignedAttributeIds: ['attr-size', 'attr-color'],
-    requiresGenderMatch: false,
-    active: true
-  },
-  {
-    id: 'grp-footwear',
-    code: 'FOOTWEAR',
-    nameEn: 'Safety Footwear & Steel-Toe Boots',
-    nameAr: 'أحذية السلامة ومقدمة الفولاذ',
-    assignedAttributeIds: ['attr-size', 'attr-gender'],
-    requiresGenderMatch: true, // Gender Match strictly required
-    active: true
-  },
-  {
-    id: 'grp-respirators',
-    code: 'RESPIRATORS',
-    nameEn: 'Respiratory Protection Systems',
-    nameAr: 'أنظمة حماية التنفس',
-    assignedAttributeIds: ['attr-size'],
-    requiresGenderMatch: false,
-    active: true
-  }
+  { id: 'ig-1', code: 'HEAD', name: 'Head Protection', active: true, attributeIds: ['attr-3'], requiresGenderMatch: false },
+  { id: 'ig-2', code: 'HAND', name: 'Hand Protection', active: true, attributeIds: ['attr-4', 'attr-5'], requiresGenderMatch: false },
+  { id: 'ig-3', code: 'FOOT', name: 'Footwear', active: true, attributeIds: ['attr-2', 'attr-7'], requiresGenderMatch: true },
+  { id: 'ig-4', code: 'BODY', name: 'Clothing', active: true, attributeIds: ['attr-1', 'attr-3', 'attr-7'], requiresGenderMatch: true },
+  { id: 'ig-5', code: 'RESP', name: 'Respiratory', active: true, attributeIds: ['attr-6'], requiresGenderMatch: false },
 ];
 
 export const mockPPEItems: PPEItem[] = [
-  {
-    id: 'ppe-hlm-001',
-    itemCode: 'HLM-001',
-    nameEn: 'MSA V-Gard Safety Helmet Class E',
-    nameAr: 'خوذة سلامة MSA V-Gard فئة E',
-    category: 'Head',
-    itemGroupId: 'grp-helmets',
-    lifespanValue: 3,
-    lifespanUnit: 'Years',
-    uom: 'Piece',
-    descriptionEn: 'High-density polyethylene dielectric protective cap rated up to 20,000V.',
-    descriptionAr: 'قبعة واقية عالية الكثافة معزولة حتى 20,000 فولت.',
-    manufacturer: 'MSA Safety',
-    model: 'V-Gard 500',
-    standardCertification: 'ANSI/ISEA Z89.1-2014 / EN 397',
-    riskCategory: 'Category II',
-    reorderLevels: {
-      'loc-cai-new': 50,
-      'loc-alx-new': 20
-    },
-    locationIds: ['loc-cai-new', 'loc-alx-new', 'loc-main-gen'],
-    itemCodeLocked: true,
-    active: true
-  },
-  {
-    id: 'ppe-glv-002',
-    itemCode: 'GLV-002',
-    nameEn: 'Ansell ActivArmr Heavy Duty Gloves',
-    nameAr: 'قفازات أنسيل للخدمة الشاقة',
-    category: 'Hand',
-    itemGroupId: 'grp-gloves',
-    lifespanValue: 3,
-    lifespanUnit: 'Months',
-    uom: 'Pair',
-    descriptionEn: 'Reinforced split cowhide leather work gloves with Kevlar stitching.',
-    descriptionAr: 'قفازات جلد طبيعي مدعمة بخياطة كيفلار لمقاومة التمزق.',
-    manufacturer: 'Ansell',
-    model: 'ActivArmr 43-216',
-    standardCertification: 'EN 388:2016 4243D',
-    riskCategory: 'Category II',
-    reorderLevels: {
-      'loc-cai-new': 100,
-      'loc-alx-new': 30
-    },
-    locationIds: ['loc-cai-new', 'loc-alx-new'],
-    itemCodeLocked: true,
-    active: true
-  },
-  {
-    id: 'ppe-bot-003',
-    itemCode: 'BOT-003',
-    nameEn: 'Puma Safety Conquest S3 Boots',
-    nameAr: 'حذاء سلامة بوما كونكويست S3',
-    category: 'Foot',
-    itemGroupId: 'grp-footwear',
-    lifespanValue: 12,
-    lifespanUnit: 'Months',
-    uom: 'Pair',
-    descriptionEn: 'Waterproof fiberglass-toe safety boot with puncture-resistant Kevlar midsole.',
-    descriptionAr: 'حذاء سلامة مقاوم للماء بمقدمة ألياف زجاجية ونعل مقاوم للاختراق.',
-    manufacturer: 'Puma Safety',
-    model: 'Conquest High S3 HRO',
-    standardCertification: 'EN ISO 20345:2011 S3',
-    riskCategory: 'Category II',
-    reorderLevels: {
-      'loc-cai-new': 20,
-      'loc-alx-new': 15
-    },
-    locationIds: ['loc-cai-new', 'loc-alx-new'],
-    itemCodeLocked: true,
-    active: true
-  },
-  {
-    id: 'ppe-resp-004',
-    itemCode: 'RESP-004',
-    nameEn: '3M Aura 9332+ FFP3 Valved Respirator',
-    nameAr: 'كمامة تنفس 3M Aura FFP3 بصمام',
-    category: 'Respiratory',
-    itemGroupId: 'grp-respirators',
-    lifespanValue: 30,
-    lifespanUnit: 'Days',
-    uom: 'Piece',
-    descriptionEn: 'High-protection particulate respirator for toxic dusts, mists, and fumes.',
-    descriptionAr: 'قناع عالي الحماية ضد الأغبرة السامة والأبخرة الصناعية.',
-    manufacturer: '3M',
-    model: 'Aura 9332+',
-    standardCertification: 'EN 149:2001+A1:2009 FFP3 NR D',
-    riskCategory: 'Category III', // Lethal risk
-    reorderLevels: {
-      'loc-cai-new': 150,
-      'loc-alx-new': 50
-    },
-    locationIds: ['loc-cai-new', 'loc-alx-new'],
-    itemCodeLocked: true,
-    active: true
-  },
-  {
-    id: 'ppe-harn-005',
-    itemCode: 'HARN-005',
-    nameEn: 'Petzl Volt Fall Arrest Harness',
-    nameAr: 'حزام منع السقوط بيتزل فولت',
-    category: 'Fall Protection',
-    itemGroupId: 'grp-helmets',
-    lifespanValue: 5,
-    lifespanUnit: 'Years',
-    uom: 'Piece',
-    descriptionEn: 'Full body harness with sternal and dorsal attachment points for tower climbing.',
-    descriptionAr: 'حزام أمان كامل للجسم مع نقاط تثبيت صدرية وظهرية.',
-    manufacturer: 'Petzl',
-    model: 'Volt Wind International',
-    standardCertification: 'ANSI Z359.11 / EN 361',
-    riskCategory: 'Category III', // Lethal risk
-    reorderLevels: {
-      'loc-cai-new': 10
-    },
-    locationIds: ['loc-cai-new'],
-    itemCodeLocked: true,
-    active: true
-  },
-  {
-    id: 'ppe-wld-006',
-    itemCode: 'WLD-006',
-    nameEn: 'Speedglas 9100XX Auto-Darkening Welding Helmet',
-    nameAr: 'خوذة لحام سبيدجلاس تعتيم تلقائي',
-    category: 'Head',
-    itemGroupId: 'grp-helmets',
-    lifespanValue: 2,
-    lifespanUnit: 'Years',
-    uom: 'Piece',
-    descriptionEn: 'Advanced shade 5, 8-13 welding shield with side windows and optical clarity 1/1/1/2.',
-    descriptionAr: 'درع لحام متقدم بتعتيم تلقائي 5-13 مع نوافذ جانبية.',
-    manufacturer: '3M Speedglas',
-    model: '9100XX',
-    standardCertification: 'EN 175:B / EN 379',
-    riskCategory: 'Category III', // Lethal/irreversible risk
-    reorderLevels: {
-      'loc-cai-new': 5
-    },
-    locationIds: ['loc-cai-new'],
-    itemCodeLocked: true,
-    active: true
-  },
-  {
-    id: 'ppe-vst-007',
-    itemCode: 'VST-007',
-    nameEn: 'Portwest Hi-Vis Executive Vest',
-    nameAr: 'سترة عاكسة للمشرفين بورتويست',
-    category: 'Body',
-    itemGroupId: 'grp-helmets',
-    lifespanValue: 6,
-    lifespanUnit: 'Months',
-    uom: 'Piece',
-    descriptionEn: 'Class 2 high visibility waist coat with mobile pocket and dual ID holder.',
-    descriptionAr: 'سترة فسفورية عاكسة فئة 2 مع جيوب إضافية.',
-    manufacturer: 'Portwest',
-    model: 'C476',
-    standardCertification: 'EN ISO 20471 Class 2',
-    riskCategory: 'Category I',
-    reorderLevels: {
-      'loc-cai-new': 40
-    },
-    locationIds: ['loc-cai-new'],
-    itemCodeLocked: false,
-    active: true
-  }
+  { id: 'ppe-1', itemCode: 'HELM-YEL', name: 'Safety Helmet Yellow', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 3, description: 'Standard safety helmet for construction', manufacturer: 'MSA', model: 'V-Gard', standardCertification: 'EN 397', riskCategory: 'II', reorderLevel: 50, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-2', itemCode: 'HELM-RED', name: 'Safety Helmet Red', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 3, description: 'Standard safety helmet for fire team', manufacturer: 'MSA', model: 'V-Gard', standardCertification: 'EN 397', riskCategory: 'II', reorderLevel: 10, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-3', itemCode: 'GLOV-LTH-9', name: 'Leather Gloves Size 9', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 3, description: 'Heavy duty leather gloves for welding and rigging', manufacturer: 'Ansell', model: 'ActivArmr', standardCertification: 'EN 388', riskCategory: 'II', reorderLevel: 100, active: true, locationIds: ['loc-1', 'loc-2', 'loc-3'], variantAttributeValueIds: ['val-4-2', 'val-5-2'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-4', itemCode: 'BOOT-S3-41', name: 'Safety Boots S3 Size 41', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 12, description: 'Steel toe puncture-resistant safety boots', manufacturer: 'Puma Safety', model: 'Conquest', standardCertification: 'EN ISO 20345', riskCategory: 'II', reorderLevel: 20, active: true, locationIds: ['loc-1', 'loc-4'], variantAttributeValueIds: ['val-2-3', 'val-7-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-5', itemCode: 'COV-COT-L', name: 'Cotton Coverall Size L', category: 'Clothing', itemGroupId: 'ig-4', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 6, description: '100% Breathable cotton coverall with reflective tape', manufacturer: 'Dickies', model: 'Redhawk', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 30, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-1-3', 'val-5-1', 'val-7-1'], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-6', itemCode: 'RESP-P3', name: 'P3 Respirator', category: 'Respiratory', itemGroupId: 'ig-5', hasSize: false, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 30, description: 'High efficiency particulate respirator FFP3', manufacturer: '3M', model: 'Aura 9332+', standardCertification: 'EN 149', riskCategory: 'III', reorderLevel: 200, active: true, locationIds: ['loc-1', 'loc-2'], variantAttributeValueIds: ['val-6-3'], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-7', itemCode: 'HELM-WELD', name: 'Welding Helmet', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 2, description: 'Auto-darkening welding helmet solar powered', manufacturer: 'Speedglas', model: '9100', standardCertification: 'EN 175', riskCategory: 'III', reorderLevel: 5, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-8', itemCode: 'VEST-YEL', name: 'Hi-Vis Vest Yellow', category: 'Clothing', itemGroupId: 'ig-4', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 6, description: 'Class 2 high visibility vest with front zipper', manufacturer: 'Portwest', model: 'C470', standardCertification: 'EN ISO 20471', riskCategory: 'I', reorderLevel: 100, active: true, locationIds: ['loc-1', 'loc-3', 'loc-4'], variantAttributeValueIds: ['val-1-3', 'val-3-3', 'val-7-3'], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-9', itemCode: 'GLOV-COT-M', name: 'Cotton Gloves M', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 15, description: 'Light general handling cotton gloves', manufacturer: 'Local', model: 'Basic', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 500, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-4-2', 'val-5-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-10', itemCode: 'GLOV-COT-L', name: 'Cotton Gloves L', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 15, description: 'Light general handling cotton gloves', manufacturer: 'Local', model: 'Basic', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 500, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-4-3', 'val-5-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-11', itemCode: 'HARNESS-FB', name: 'Full Body Harness', category: 'Fall Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 5, description: 'Fall arrest full body safety harness with dorsal D-ring', manufacturer: 'Petzl', model: 'Volt', standardCertification: 'EN 361', riskCategory: 'III', reorderLevel: 10, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-12', itemCode: 'EARPLUG-DISP', name: 'Disposable Earplugs', category: 'Hearing Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 1, description: 'Soft polyurethane foam earplugs SNR 37dB', manufacturer: 'Howard Leight', model: 'Max', standardCertification: 'EN 352-2', riskCategory: 'II', reorderLevel: 50, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], unitId: 'uom-box', serialTracked: false },
+  { id: 'ppe-13', itemCode: 'GOGGLE-CLR', name: 'Clear Safety Goggles', category: 'Eye Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 6, description: 'Anti-scratch and anti-fog clear goggles', manufacturer: 'Uvex', model: 'Pheos', standardCertification: 'EN 166', riskCategory: 'II', reorderLevel: 30, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-14', itemCode: 'BOOT-S3-42', name: 'Safety Boots S3 Size 42', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 12, description: 'Steel toe safety boots', manufacturer: 'Puma Safety', model: 'Conquest', standardCertification: 'EN ISO 20345', riskCategory: 'II', reorderLevel: 20, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-2-4', 'val-7-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-15', itemCode: 'BOOT-RUB-41', name: 'Rubber Boots Size 41', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 24, description: 'Waterproof chemical resistant rubber boots', manufacturer: 'Dunlop', model: 'Purofort', standardCertification: 'EN ISO 20347', riskCategory: 'I', reorderLevel: 15, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-2-3', 'val-7-3'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-16', itemCode: 'GASDET-4G', name: 'Portable 4-Gas Detector', category: 'Respiratory', itemGroupId: 'ig-5', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 2, description: 'Personal multi-gas monitor (O2, LEL, CO, H2S), serial tracked', manufacturer: 'MSA', model: 'ALTAIR 4XR', standardCertification: 'ATEX', riskCategory: 'III', reorderLevel: 2, active: true, locationIds: ['loc-1', 'loc-2'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: true },
 ];
 
 export const mockKits: Kit[] = [
-  {
-    id: 'kit-elec',
-    nameEn: 'Electrical Engineer Safety Kit',
-    nameAr: 'طقم مهندس الكهرباء للسلامة',
-    jobPositionId: 'jp-1',
-    active: true,
-    items: [
-      { id: 'ki-1', ppeItemId: 'ppe-hlm-001', quantity: 1 },
-      { id: 'ki-2', ppeItemId: 'ppe-glv-002', quantity: 1 },
-      { id: 'ki-3', ppeItemId: 'ppe-bot-003', quantity: 1 }
-    ]
-  },
-  {
-    id: 'kit-weld',
-    nameEn: 'Welder Certified Protection Kit',
-    nameAr: 'طقم اللحام المعتمد للحماية',
-    jobPositionId: 'jp-4',
-    active: true,
-    items: [
-      { id: 'ki-4', ppeItemId: 'ppe-wld-006', quantity: 1 },
-      { id: 'ki-5', ppeItemId: 'ppe-glv-002', quantity: 2 },
-      { id: 'ki-6', ppeItemId: 'ppe-resp-004', quantity: 5 }
-    ]
-  },
-  {
-    id: 'kit-scaff',
-    nameEn: 'Scaffolder Fall Protection Kit',
-    nameAr: 'طقم السقالات للوقاية من السقوط',
-    jobPositionId: 'jp-5',
-    active: true, // Sole active kit for Scaffolder job position with recent issuances
-    items: [
-      { id: 'ki-7', ppeItemId: 'ppe-harn-005', quantity: 1 },
-      { id: 'ki-8', ppeItemId: 'ppe-hlm-001', quantity: 1 },
-      { id: 'ki-9', ppeItemId: 'ppe-glv-002', quantity: 1 }
-    ]
-  }
+  { id: 'kit-1', name: 'Standard Site Kit', active: true, jobPositionId: 'jp-10', items: [
+    { id: 'ki-1', ppeItemId: 'ppe-1', qty: 1 }, { id: 'ki-2', ppeItemId: 'ppe-8', qty: 1 }, { id: 'ki-3', ppeItemId: 'ppe-13', qty: 1 }
+  ]},
+  { id: 'kit-2', name: 'Welder Kit', active: true, jobPositionId: 'jp-4', items: [
+    { id: 'ki-4', ppeItemId: 'ppe-7', qty: 1 }, { id: 'ki-5', ppeItemId: 'ppe-3', qty: 2 }, { id: 'ki-6', ppeItemId: 'ppe-5', qty: 1 }
+  ]},
+  { id: 'kit-3', name: 'Scaffolder Kit', active: true, jobPositionId: 'jp-5', items: [
+    { id: 'ki-7', ppeItemId: 'ppe-1', qty: 1 }, { id: 'ki-8', ppeItemId: 'ppe-11', qty: 1 }, { id: 'ki-9', ppeItemId: 'ppe-9', qty: 3 }
+  ]},
+  { id: 'kit-4', name: 'Lab Technician Kit', active: true, jobPositionId: 'jp-6', items: [
+    { id: 'ki-10', ppeItemId: 'ppe-13', qty: 1 }, { id: 'ki-11', ppeItemId: 'ppe-9', qty: 5 }, { id: 'ki-12', ppeItemId: 'ppe-6', qty: 1 }
+  ]},
+  { id: 'kit-5', name: 'Manager Site Visit Kit', active: true, jobPositionId: 'jp-1', items: [
+    { id: 'ki-13', ppeItemId: 'ppe-1', qty: 1 }, { id: 'ki-14', ppeItemId: 'ppe-8', qty: 1 }
+  ]},
 ];
 
 export const mockEmployees: Employee[] = [
-  {
-    id: 'emp-1',
-    employeeCode: 'EMP-001',
-    name: 'Hesham Mostafa (Admin)',
-    jobPositionId: 'jp-8',
-    role: 'Admin',
-    email: 'hesham.admin@bitwise-hse.com',
-    site: 'Main Campus',
-    department: 'Health, Safety & Environment',
-    status: 'Active',
-    gender: 'Male',
-    active: true
-  },
-  {
-    id: 'emp-2',
-    employeeCode: 'EMP-002',
-    name: 'Tarek Ibrahim (HSE Supervisor)',
-    jobPositionId: 'jp-8',
-    role: 'HSE Supervisor',
-    email: 'tarek.supervisor@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Health, Safety & Environment',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-1',
-    active: true
-  },
-  {
-    id: 'emp-3',
-    employeeCode: 'EMP-003',
-    name: 'Sarah Direct Supervisor',
-    jobPositionId: 'jp-3',
-    role: 'Direct Supervisor',
-    email: 'sarah.direct@bitwise-hse.com',
-    site: 'Alexandria Site',
-    department: 'Operations',
-    status: 'Active',
-    gender: 'Female',
-    supervisorId: 'emp-1',
-    active: true
-  },
-  {
-    id: 'emp-8',
-    employeeCode: 'EMP-008',
-    name: 'Sam Store Keeper (Cairo)',
-    jobPositionId: 'jp-7',
-    role: 'Store Keeper',
-    email: 'sam.storekeeper@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Logistics & Warehousing',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-2',
-    active: true
-  },
-  {
-    id: 'emp-11',
-    employeeCode: 'EMP-011',
-    name: 'Mona Store Keeper (Alexandria)',
-    jobPositionId: 'jp-7',
-    role: 'Store Keeper',
-    email: 'mona.storekeeper@bitwise-hse.com',
-    site: 'Alexandria Site',
-    department: 'Logistics & Warehousing',
-    status: 'Active',
-    gender: 'Female',
-    supervisorId: 'emp-2',
-    active: true
-  },
-  {
-    id: 'emp-13',
-    employeeCode: 'EMP-013',
-    name: 'Unassigned Store Keeper',
-    jobPositionId: 'jp-7',
-    role: 'Store Keeper',
-    email: 'unassigned.keeper@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Logistics & Warehousing',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-2',
-    active: true
-  },
-  {
-    id: 'emp-4',
-    employeeCode: 'EMP-004',
-    name: 'Ali Worker',
-    jobPositionId: 'jp-10',
-    role: 'Employee',
-    email: 'ali.worker@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Civil Works',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-3',
-    active: true
-  },
-  {
-    id: 'emp-5',
-    employeeCode: 'EMP-005',
-    name: 'Omer Welder',
-    jobPositionId: 'jp-4',
-    role: 'Employee',
-    email: 'omer.welder@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Welding Fabrication',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-3',
-    active: true
-  },
-  {
-    id: 'emp-6',
-    employeeCode: 'EMP-006',
-    name: 'Zaid Laborer',
-    jobPositionId: 'jp-10',
-    role: 'Employee',
-    email: 'zaid.laborer@bitwise-hse.com',
-    site: 'Alexandria Site',
-    department: 'Operations',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-3',
-    active: true
-  },
-  {
-    id: 'emp-7',
-    employeeCode: 'EMP-007',
-    name: 'Fatima Engineer (No Email)',
-    jobPositionId: 'jp-1',
-    role: 'Employee',
-    email: '', // Intentionally blank to test BD-I473 partial failure logging
-    site: 'Cairo Site',
-    department: 'Electrical Engineering',
-    status: 'Active',
-    gender: 'Female',
-    supervisorId: 'emp-3',
-    active: true
-  },
-  {
-    id: 'emp-9',
-    employeeCode: 'EMP-009',
-    name: 'Tom Driver (Transferred)',
-    jobPositionId: 'jp-9',
-    role: 'Employee',
-    email: 'tom.driver@bitwise-hse.com',
-    site: 'Main Campus',
-    department: 'Fleet Logistics',
-    status: 'Transferred', // No reminders
-    gender: 'Male',
-    supervisorId: 'emp-3',
-    active: true
-  },
-  {
-    id: 'emp-10',
-    employeeCode: 'EMP-010',
-    name: 'Jerry Scaffolder (Terminated)',
-    jobPositionId: 'jp-5',
-    role: 'Employee',
-    email: 'jerry.scaffold@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Construction',
-    status: 'Terminated', // No reminders
-    gender: 'Male',
-    supervisorId: 'emp-3',
-    active: false
-  },
-  {
-    id: 'emp-12',
-    employeeCode: 'EMP-012',
-    name: 'Ahmed Mansoor Electrician',
-    jobPositionId: 'jp-1',
-    role: 'Employee',
-    email: 'ahmed.electrician@bitwise-hse.com',
-    site: 'Cairo Site',
-    department: 'Electrical Engineering',
-    status: 'Active',
-    gender: 'Male',
-    supervisorId: 'emp-3',
-    active: true,
-    lastReceivedSizes: {
-      'ppe-bot-003': { 'attr-size': 'val-s-42', 'attr-gender': 'val-g-m' },
-      'ppe-glv-002': { 'attr-size': 'val-s-l', 'attr-color': 'val-c-yel' }
-    }
-  }
-];
-
-export const mockBatches: Batch[] = [
-  // Cairo Main Store (New)
-  {
-    id: 'bat-001',
-    batchNumber: 'BAT-2026-001',
-    ppeItemId: 'ppe-hlm-001',
-    locationId: 'loc-cai-new',
-    variantKey: 'COLOR:Yellow',
-    quantity: 35, // On hand 35 < reorder 50 -> Low stock flag!
-    availableQty: 35,
-    quarantinedQty: 0,
-    condition: 'New',
-    expiryDate: '2029-01-15',
-    manufacturerExpiryDate: '2029-01-15',
-    status: 'Active',
-    createdAt: '2026-01-15T08:00:00Z'
-  },
-  {
-    id: 'bat-002',
-    batchNumber: 'BAT-2026-002',
-    ppeItemId: 'ppe-glv-002',
-    locationId: 'loc-cai-new',
-    variantKey: 'SIZE:L|COLOR:Yellow',
-    quantity: 180,
-    availableQty: 180,
-    quarantinedQty: 0,
-    condition: 'New',
-    expiryDate: '2028-06-30',
-    manufacturerExpiryDate: '2028-06-30',
-    status: 'Active',
-    createdAt: '2026-02-10T09:00:00Z'
-  },
-  {
-    id: 'bat-003',
-    batchNumber: 'BAT-2026-003',
-    ppeItemId: 'ppe-bot-003',
-    locationId: 'loc-cai-new',
-    variantKey: 'SIZE:42|GENDER:Male',
-    quantity: 45,
-    availableQty: 45,
-    quarantinedQty: 0,
-    condition: 'New',
-    expiryDate: '2029-12-31',
-    manufacturerExpiryDate: '2029-12-31',
-    status: 'Active',
-    createdAt: '2026-02-15T11:00:00Z'
-  },
-  {
-    id: 'bat-004',
-    batchNumber: 'BAT-2026-004',
-    ppeItemId: 'ppe-resp-004',
-    locationId: 'loc-cai-new',
-    variantKey: 'SIZE:M',
-    quantity: 120,
-    availableQty: 80,
-    quarantinedQty: 40, // 40 units quarantined
-    condition: 'New',
-    expiryDate: '2027-05-20',
-    manufacturerExpiryDate: '2027-05-20',
-    status: 'Quarantined',
-    createdAt: '2026-03-01T10:00:00Z'
-  },
-  {
-    id: 'bat-005',
-    batchNumber: 'BAT-2026-005',
-    ppeItemId: 'ppe-harn-005',
-    locationId: 'loc-cai-new',
-    quantity: 15,
-    availableQty: 15,
-    quarantinedQty: 0,
-    condition: 'New',
-    expiryDate: '2031-01-01',
-    manufacturerExpiryDate: '2031-01-01',
-    status: 'Active',
-    createdAt: '2026-01-20T14:00:00Z'
-  },
-  // Cairo Used Pool (Used / Reused)
-  {
-    id: 'bat-usd-001',
-    batchNumber: 'BAT-USD-001',
-    ppeItemId: 'ppe-hlm-001',
-    locationId: 'loc-cai-usd',
-    variantKey: 'COLOR:White',
-    quantity: 25,
-    availableQty: 25,
-    quarantinedQty: 0,
-    condition: 'Reused',
-    status: 'Active',
-    createdAt: '2026-02-01T10:00:00Z'
-  },
-  // Cairo Scrap Yard (Scrapped)
-  {
-    id: 'bat-scr-001',
-    batchNumber: 'BAT-SCR-001',
-    ppeItemId: 'ppe-hlm-001',
-    locationId: 'loc-cai-scr',
-    quantity: 8,
-    availableQty: 0,
-    quarantinedQty: 0,
-    condition: 'Scrapped',
-    status: 'Depleted',
-    createdAt: '2026-01-10T12:00:00Z'
-  }
+  { id: 'emp-1', employeeCode: 'EMP-001', name: 'Ahmed Khaled (Admin)', jobPositionId: 'jp-8', role: 'Admin', gender: 'Male', status: 'Active', department: 'HSE', site: 'Main Campus', active: true },
+  { id: 'emp-2', employeeCode: 'EMP-002', name: 'John Doe (HSE Super)', jobPositionId: 'jp-8', role: 'HSE Supervisor', gender: 'Male', status: 'Active', department: 'HSE', site: 'Main Campus', active: true },
+  { id: 'emp-3', employeeCode: 'EMP-003', name: 'Sarah Connor (Direct Super)', jobPositionId: 'jp-3', role: 'Direct Supervisor', gender: 'Female', status: 'Active', department: 'Operations', site: 'Main Campus', active: true },
+  { id: 'emp-8', employeeCode: 'EMP-008', name: 'Mike Store Keeper', jobPositionId: 'jp-7', role: 'Store Keeper', gender: 'Male', status: 'Active', department: 'Logistics', site: 'Main Campus', active: true },
+  { id: 'emp-4', employeeCode: 'EMP-004', name: 'Ali Mahmoud', jobPositionId: 'jp-4', role: 'Employee', gender: 'Male', status: 'Active', department: 'Operations', site: 'Main Campus', supervisorId: 'emp-3', active: true },
+  { id: 'emp-5', employeeCode: 'EMP-005', name: 'Omer Farooq', jobPositionId: 'jp-4', role: 'Employee', gender: 'Male', status: 'Active', department: 'Operations', site: 'Main Campus', supervisorId: 'emp-3', active: true },
+  { id: 'emp-6', employeeCode: 'EMP-006', name: 'Zaid Hassan', jobPositionId: 'jp-10', role: 'Employee', gender: 'Male', status: 'Active', department: 'Operations', site: 'Main Campus', supervisorId: 'emp-3', active: true },
+  { id: 'emp-7', employeeCode: 'EMP-007', name: 'Sara Youssef', jobPositionId: 'jp-10', role: 'Employee', gender: 'Female', status: 'Active', department: 'Operations', site: 'Main Campus', supervisorId: 'emp-2', active: true },
+  { id: 'emp-9', employeeCode: 'EMP-009', name: 'Tom Hardy', jobPositionId: 'jp-9', role: 'Employee', gender: 'Male', status: 'Active', department: 'Transport', site: 'Main Campus', supervisorId: 'emp-2', active: true },
+  { id: 'emp-10', employeeCode: 'EMP-010', name: 'Jerry Seinfeld', jobPositionId: 'jp-5', role: 'Employee', gender: 'Male', status: 'Active', department: 'Operations', site: 'Main Campus', supervisorId: 'emp-3', active: true },
+  { id: 'emp-11', employeeCode: 'EMP-011', name: 'Mona Zaki (Terminated)', jobPositionId: 'jp-6', role: 'Employee', gender: 'Female', status: 'Terminated', department: 'Lab', site: 'Main Campus', supervisorId: 'emp-2', active: false },
+  { id: 'emp-12', employeeCode: 'EMP-012', name: 'Hossam Electrician (Transferred)', jobPositionId: 'jp-1', role: 'Employee', gender: 'Male', status: 'Transferred', department: 'Engineering', site: 'Site B', supervisorId: 'emp-3', active: false },
 ];
 
 export const mockStockBalances: StockBalance[] = [
-  { id: 'sb-1', ppeItemId: 'ppe-hlm-001', locationId: 'loc-cai-new', quantityOnHand: 35, quarantinedQuantity: 0, availableQuantity: 35 },
-  { id: 'sb-2', ppeItemId: 'ppe-glv-002', locationId: 'loc-cai-new', quantityOnHand: 180, quarantinedQuantity: 0, availableQuantity: 180 },
-  { id: 'sb-3', ppeItemId: 'ppe-bot-003', locationId: 'loc-cai-new', quantityOnHand: 40, quarantinedQuantity: 0, availableQuantity: 40 },
-  { id: 'sb-4', ppeItemId: 'ppe-resp-004', locationId: 'loc-cai-new', quantityOnHand: 25, quarantinedQuantity: 0, availableQuantity: 25 },
-  { id: 'sb-5', ppeItemId: 'ppe-harn-005', locationId: 'loc-cai-new', quantityOnHand: 15, quarantinedQuantity: 0, availableQuantity: 15 },
-  { id: 'sb-6', ppeItemId: 'ppe-hlm-001', locationId: 'loc-cai-usd', quantityOnHand: 25, quarantinedQuantity: 0, availableQuantity: 25 },
-  { id: 'sb-7', ppeItemId: 'ppe-hlm-001', locationId: 'loc-cai-scr', quantityOnHand: 8, quarantinedQuantity: 0, availableQuantity: 0 },
+  { id: 'sb-1', ppeItemId: 'ppe-1', locationId: 'loc-1', quantityOnHand: 150, quarantinedOnHand: 10 },
+  { id: 'sb-2', ppeItemId: 'ppe-2', locationId: 'loc-1', quantityOnHand: 5, quarantinedOnHand: 0 }, // Low stock (reorder 10)
+  { id: 'sb-3', ppeItemId: 'ppe-3', locationId: 'loc-1', quantityOnHand: 200, quarantinedOnHand: 0 },
+  { id: 'sb-4', ppeItemId: 'ppe-4', locationId: 'loc-1', quantityOnHand: 15, quarantinedOnHand: 0 }, // Low stock (reorder 20)
+  { id: 'sb-5', ppeItemId: 'ppe-6', locationId: 'loc-1', quantityOnHand: 0, quarantinedOnHand: 0 },  // Out of stock
+  { id: 'sb-6', ppeItemId: 'ppe-8', locationId: 'loc-1', quantityOnHand: 120, quarantinedOnHand: 0 },
+  { id: 'sb-7', ppeItemId: 'ppe-11', locationId: 'loc-1', quantityOnHand: 8, quarantinedOnHand: 0 }, // Low stock (reorder 10)
+  { id: 'sb-8', ppeItemId: 'ppe-1', locationId: 'loc-3', quantityOnHand: 20, quarantinedOnHand: 0 },
+  { id: 'sb-9', ppeItemId: 'ppe-1', locationId: 'loc-5', quantityOnHand: 12, quarantinedOnHand: 0 }, // Used location
+  { id: 'sb-10', ppeItemId: 'ppe-7', locationId: 'loc-6', quantityOnHand: 3, quarantinedOnHand: 0 }, // Scrap location
+  { id: 'sb-11', ppeItemId: 'ppe-16', locationId: 'loc-1', quantityOnHand: 3, quarantinedOnHand: 0 }, // Serial tracked: equals In Stock serials
 ];
 
-export const mockOpeningBalances: OpeningBalance[] = [
-  {
-    id: 'ob-2026-001',
-    reference: 'ADJ-OB-2026-00001',
-    locationId: 'loc-cai-new',
-    referenceDate: '2026-01-01T00:00:00Z',
-    notes: 'Go-live initial opening stock verification',
-    status: 'Approved',
-    preparedBy: 'emp-8',
-    lines: [
-      {
-        id: 'obl-1',
-        ppeItemId: 'ppe-hlm-001',
-        variantKey: 'COLOR:Yellow',
-        batchNumber: 'BAT-2026-001',
-        expiryDate: '2029-01-15T00:00:00Z',
-        quantity: 35,
-        costPerUnit: 45.0
-      }
-    ],
-    createdAt: '2026-01-01T08:00:00Z'
-  }
+export const mockBatches: Batch[] = [
+  { id: 'batch-1', batchNumber: 'B-26-001', ppeItemId: 'ppe-1', locationId: 'loc-1', quantity: 150, availableQty: 140, quarantinedQty: 10, isQuarantined: false, expiryDate: '2028-08-01', costPerUnit: 15.5, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
+  { id: 'batch-2', batchNumber: 'B-26-002', ppeItemId: 'ppe-2', locationId: 'loc-1', quantity: 5, availableQty: 5, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-08-01', costPerUnit: 18.0, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
+  { id: 'batch-3', batchNumber: 'B-26-003', ppeItemId: 'ppe-3', locationId: 'loc-1', quantity: 200, availableQty: 200, quarantinedQty: 0, isQuarantined: false, expiryDate: '2027-12-31', costPerUnit: 8.5, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
+  { id: 'batch-4', batchNumber: 'B-26-004', ppeItemId: 'ppe-4', locationId: 'loc-1', quantity: 15, availableQty: 15, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-06-30', costPerUnit: 45.0, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
+  { id: 'batch-5', batchNumber: 'B-26-005', ppeItemId: 'ppe-8', locationId: 'loc-1', quantity: 120, availableQty: 120, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-01-15', costPerUnit: 6.0, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
+  { id: 'batch-6', batchNumber: 'B-26-006', ppeItemId: 'ppe-16', locationId: 'loc-1', quantity: 3, availableQty: 3, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-08-01', costPerUnit: 950, status: 'Active', createdAt: '2026-08-02T10:00:00Z' },
 ];
-
-export const mockScrapEntries: ScrapEntry[] = [
-  {
-    id: 'scr-1',
-    ppeItemId: 'ppe-hlm-001',
-    locationId: 'loc-cai-scr',
-    batchNumber: 'BAT-SCR-001',
-    quantity: 8,
-    reason: 'Cracked outer shell detected during site safety inspection',
-    reversed: false,
-    scrappedBy: 'emp-8',
-    createdAt: '2026-01-10T12:00:00Z'
-  }
-];
-
-// Dual signature samples (Base64 SVG data URLs for instant crisp rendering)
-const sampleStoreKeeperSig = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="160" height="50" viewBox="0 0 160 50"><path d="M10,35 Q40,5 70,25 T130,15 T150,30" fill="none" stroke="%230f766e" stroke-width="2.5"/></svg>';
-const sampleEmployeeSig = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="160" height="50" viewBox="0 0 160 50"><path d="M15,40 C35,10 65,45 95,20 C125,5 140,35 155,25" fill="none" stroke="%231e3a8a" stroke-width="2.5"/></svg>';
 
 export const mockIssuances: Issuance[] = [
-  // Ahmed Electrician active issuances
-  {
-    id: 'iss-2026-001',
-    reference: 'ISS-2026-00001',
-    employeeId: 'emp-12',
-    ppeItemId: 'ppe-hlm-001',
-    locationId: 'loc-cai-new',
-    quantity: 1,
-    batchNumber: 'BAT-2026-001',
-    variantKey: 'COLOR:Yellow',
-    conditionAtIssue: 'New',
-    issueDate: '2024-03-01',
-    expectedReplacementDate: '2027-03-01',
-    status: 'issued',
+  { 
+    id: 'iss-1', 
+    reference: 'ISS-2023-00001',
+    employeeId: 'emp-4', 
+    ppeItemId: 'ppe-1', 
+    locationId: 'loc-1', 
+    quantity: 1, 
+    batchNumber: 'B-26-001',
+    issueDate: '2023-01-10T10:00:00Z', 
+    expectedReplacementDate: '2026-01-10T10:00:00Z', 
+    status: 'issued', 
     issuedBy: 'emp-8',
-    storeKeeperSignature: sampleStoreKeeperSig,
-    receiverSignature: sampleEmployeeSig,
-    createdAt: '2024-03-01T09:00:00Z'
+    storeKeeperSignature: 'data:image/png;base64,mockSignSK',
+    receiverSignature: 'data:image/png;base64,mockSignRec'
   },
-  {
-    id: 'iss-2026-002',
+  { 
+    id: 'iss-2', 
     reference: 'ISS-2026-00002',
-    employeeId: 'emp-12',
-    ppeItemId: 'ppe-bot-003',
-    locationId: 'loc-cai-new',
-    quantity: 1,
-    batchNumber: 'BAT-2026-003',
-    variantKey: 'SIZE:42|GENDER:Male',
-    conditionAtIssue: 'New',
-    issueDate: '2025-11-10',
-    expectedReplacementDate: '2026-11-10', // Upcoming replacement (within ~16 days)
-    status: 'issued',
+    employeeId: 'emp-4', 
+    ppeItemId: 'ppe-8', 
+    locationId: 'loc-1', 
+    quantity: 1, 
+    batchNumber: 'B-26-005',
+    issueDate: '2026-08-01T09:30:00Z', 
+    expectedReplacementDate: '2027-02-01T09:30:00Z', 
+    status: 'issued', 
     issuedBy: 'emp-8',
-    storeKeeperSignature: sampleStoreKeeperSig,
-    receiverSignature: sampleEmployeeSig,
-    createdAt: '2025-11-10T10:30:00Z'
+    storeKeeperSignature: 'data:image/png;base64,mockSignSK',
+    receiverSignature: 'data:image/png;base64,mockSignRec'
+  },
+  { 
+    id: 'iss-3', 
+    reference: 'ISS-2025-00003',
+    employeeId: 'emp-5', 
+    ppeItemId: 'ppe-7', 
+    locationId: 'loc-1', 
+    quantity: 1, 
+    issueDate: '2025-01-15T08:00:00Z', 
+    expectedReplacementDate: '2026-11-20T08:00:00Z', // Expiring soon!
+    status: 'issued', 
+    issuedBy: 'emp-8',
+    storeKeeperSignature: 'data:image/png;base64,mockSignSK',
+    receiverSignature: 'data:image/png;base64,mockSignRec'
+  },
+  { 
+    id: 'iss-4', 
+    reference: 'LN-2026-00001',
+    holderName: 'Kareem Visitor', 
+    holderType: 'Visitor', 
+    companyName: 'PetroChem Inspection',
+    contactNumber: '+20 100 123 4567',
+    hostEmployeeId: 'emp-3',
+    ppeItemId: 'ppe-1', 
+    locationId: 'loc-1', 
+    quantity: 1, 
+    batchNumber: 'B-26-001',
+    issueDate: '2026-08-15T10:00:00Z', 
+    expectedReturnDate: '2026-08-16T17:00:00Z', // Overdue loan!
+    status: 'issued', 
+    isLoan: true,
+    issuedBy: 'emp-8',
+    lines: [
+      { id: 'lnl-1', ppeItemId: 'ppe-1', quantity: 1, returnedQty: 0, status: 'open' }
+    ],
+    storeKeeperSignature: 'data:image/png;base64,mockSignSK',
+    receiverSignature: 'data:image/png;base64,mockSignRec'
+  },
+  { 
+    id: 'iss-5', 
+    reference: 'ISS-2026-00005',
+    employeeId: 'emp-6', 
+    kitId: 'kit-1', 
+    locationId: 'loc-1', 
+    quantity: 1, 
+    issueDate: '2026-07-01T11:00:00Z', 
+    status: 'returned', 
+    issuedBy: 'emp-8',
+    storeKeeperSignature: 'data:image/png;base64,mockSignSK',
+    receiverSignature: 'data:image/png;base64,mockSignRec'
+  },
+  { 
+    id: 'iss-6', 
+    reference: 'LN-2026-00002',
+    holderName: 'Apex Contractors Crew', 
+    holderType: 'Contractor', 
+    companyName: 'Apex Scaffolding LLC',
+    contactNumber: '+20 102 999 8888',
+    hostEmployeeId: 'emp-2',
+    ppeItemId: 'ppe-8', 
+    locationId: 'loc-1', 
+    quantity: 2, 
+    batchNumber: 'B-26-005',
+    issueDate: '2026-09-01T08:00:00Z', 
+    expectedReturnDate: '2026-12-01T17:00:00Z', // Open loan
+    status: 'issued', 
+    isLoan: true,
+    issuedBy: 'emp-8',
+    lines: [
+      { id: 'lnl-2', ppeItemId: 'ppe-8', quantity: 2, returnedQty: 0, status: 'open' }
+    ],
+    storeKeeperSignature: 'data:image/png;base64,mockSignSK',
+    receiverSignature: 'data:image/png;base64,mockSignRec'
   },
   {
-    id: 'iss-2026-003',
-    reference: 'ISS-2026-00003',
-    employeeId: 'emp-12',
-    ppeItemId: 'ppe-glv-002',
-    locationId: 'loc-cai-new',
+    id: 'iss-7',
+    reference: 'HIST-2022-00088',
+    employeeId: 'emp-10',
+    ppeItemId: 'ppe-11',
+    locationId: 'loc-1',
     quantity: 1,
-    batchNumber: 'BAT-2026-002',
-    variantKey: 'SIZE:L|COLOR:Yellow',
-    conditionAtIssue: 'New',
-    issueDate: '2026-06-15',
-    expectedReplacementDate: '2026-09-15', // Overdue replacement! (Expired 40+ days ago)
+    issueDate: '2022-05-10T09:00:00Z',
+    expectedReplacementDate: '2027-05-10T09:00:00Z',
     status: 'issued',
-    issuedBy: 'emp-8',
-    storeKeeperSignature: sampleStoreKeeperSig,
-    receiverSignature: sampleEmployeeSig,
-    createdAt: '2026-06-15T08:15:00Z'
-  },
-  // Ali Worker past returned issuance
-  {
-    id: 'iss-2026-004',
-    reference: 'ISS-2026-00004',
-    employeeId: 'emp-4',
-    ppeItemId: 'ppe-hlm-001',
-    locationId: 'loc-cai-new',
-    quantity: 1,
-    batchNumber: 'BAT-2026-001',
-    variantKey: 'COLOR:Yellow',
-    conditionAtIssue: 'New',
-    issueDate: '2025-01-10',
-    expectedReplacementDate: '2028-01-10',
-    status: 'returned',
-    issuedBy: 'emp-8',
-    storeKeeperSignature: sampleStoreKeeperSig,
-    receiverSignature: sampleEmployeeSig,
-    createdAt: '2025-01-10T09:00:00Z'
-  },
-  // Historical imported issuance (No signatures, isImported flag)
-  {
-    id: 'iss-hist-001',
-    reference: 'ISS-HIST-2024-0091',
-    employeeId: 'emp-5',
-    ppeItemId: 'ppe-wld-006',
-    locationId: 'loc-cai-new',
-    quantity: 1,
-    batchNumber: 'BAT-HIST-91',
-    conditionAtIssue: 'New',
-    issueDate: '2024-05-01',
-    expectedReplacementDate: '2026-05-01', // Overdue
-    status: 'issued',
-    isImported: true,
-    issuedBy: 'SYSTEM_IMPORT',
-    createdAt: '2024-05-01T00:00:00Z'
+    isHistorical: true,
+    issuedBy: 'emp-1',
   }
 ];
 
 export const mockIssuanceReturns: IssuanceReturn[] = [
-  {
-    id: 'ret-001',
-    issuanceId: 'iss-2026-004',
-    quantityReturned: 1,
-    condition: 'good',
-    physicalReceiptConfirmed: true,
-    returnedToLocationId: 'loc-cai-usd',
-    storeKeeperSignature: sampleStoreKeeperSig,
-    receiverSignature: sampleEmployeeSig,
-    returnedBy: 'emp-8',
-    returnDate: '2026-07-20T11:00:00Z'
-  }
-];
-
-export const mockVisitorLoans: VisitorLoan[] = [
-  {
-    id: 'loan-001',
-    loanNumber: 'LN-2026-00001',
-    recipientName: 'Kareem Fahmy',
-    recipientCompany: 'Siemens Energy Contractor',
-    hostEmployeeId: 'emp-12', // Ahmed Electrician
-    issueDate: '2026-10-20',
-    expectedReturnDate: '2026-10-30', // Open, due in 5 days
-    fromLocationId: 'loc-cai-usd',
-    status: 'Open',
-    items: [
-      {
-        id: 'li-1',
-        ppeItemId: 'ppe-hlm-001',
-        variantKey: 'COLOR:White',
-        batchNumber: 'BAT-USD-001',
-        quantity: 1,
-        returnedQuantity: 0,
-        fromLocationId: 'loc-cai-usd',
-        status: 'Open'
-      }
-    ],
-    storeKeeperSignature: sampleStoreKeeperSig,
-    recipientSignature: sampleEmployeeSig,
-    issuedBy: 'emp-8',
-    createdAt: '2026-10-20T09:30:00Z'
-  },
-  {
-    id: 'loan-002',
-    loanNumber: 'LN-2026-00002',
-    recipientName: 'Omar Sherif',
-    recipientCompany: 'Petrofac Inspection Team',
-    hostEmployeeId: 'emp-2', // Tarek HSE Supervisor
-    issueDate: '2026-10-01',
-    expectedReturnDate: '2026-10-12', // Overdue by ~13 days!
-    fromLocationId: 'loc-cai-usd',
-    status: 'Overdue',
-    items: [
-      {
-        id: 'li-2',
-        ppeItemId: 'ppe-hlm-001',
-        variantKey: 'COLOR:White',
-        batchNumber: 'BAT-USD-001',
-        quantity: 1,
-        returnedQuantity: 0,
-        fromLocationId: 'loc-cai-usd',
-        status: 'Open'
-      },
-      {
-        id: 'li-3',
-        ppeItemId: 'ppe-glv-002',
-        variantKey: 'SIZE:L|COLOR:Yellow',
-        batchNumber: 'BAT-2026-002',
-        quantity: 1,
-        returnedQuantity: 0,
-        fromLocationId: 'loc-cai-new',
-        status: 'Open'
-      }
-    ],
-    storeKeeperSignature: sampleStoreKeeperSig,
-    recipientSignature: sampleEmployeeSig,
-    issuedBy: 'emp-8',
-    createdAt: '2026-10-01T08:00:00Z'
-  }
+  { id: 'ret-1', issuanceId: 'iss-5', condition: 'good', autoScrapped: false, returnedBy: 'emp-8', returnDate: '2026-08-01T14:00:00Z' },
 ];
 
 export const mockStockAdjustments: StockAdjustment[] = [
-  {
-    id: 'adj-in-31',
-    reference: 'ADJ-IN-2026-00031',
-    type: 'IN',
-    ppeItemId: 'ppe-resp-004', // Category III -> Requires HSE Supervisor Approval
-    locationId: 'loc-cai-new',
-    batchNumber: 'BAT-2026-004B',
-    variantKey: 'SIZE:M',
-    quantityDelta: 60,
-    reasonCategory: 'Stock Count Correction',
-    reasonDetail: 'Surplus count found during annual cycle stock check in high-security respirator locker.',
-    manufacturerExpiryDate: '2028-12-31',
-    supplierDeliveryNote: 'CORR-2026-Q3',
-    status: 'pending', // Pending Approval by HSE Supervisor
-    submittedBy: 'emp-8',
-    createdAt: '2026-10-24T14:00:00Z'
-  },
-  {
-    id: 'adj-out-32',
-    reference: 'ADJ-OUT-2026-00032',
-    type: 'OUT',
-    ppeItemId: 'ppe-harn-005', // Category III
-    locationId: 'loc-cai-new',
-    batchNumber: 'BAT-2026-005',
-    quantityDelta: -2,
-    reasonCategory: 'Physical Damage',
-    reasonDetail: 'Two harnesses incurred deep webbing cuts from contact with sharp structural beam flange during transit.',
-    status: 'pending', // Pending Approval by HSE Supervisor
-    submittedBy: 'emp-8',
-    createdAt: '2026-10-25T10:15:00Z'
-  }
+  { id: 'adj-1', reference: 'ADJ-IN-PPE-2026-00001', type: 'IN', ppeItemId: 'ppe-1', locationId: 'loc-1', batchNumber: 'B-26-001', quantityDelta: 50, reasonCategory: 'Manual Correction', reason: 'Physical inventory audit variance adjustment', status: 'pending', submittedBy: 'emp-8', createdAt: '2026-09-01T10:00:00Z' },
+  { id: 'adj-2', reference: 'ADJ-IN-PPE-2026-00002', type: 'IN', ppeItemId: 'ppe-6', locationId: 'loc-1', batchNumber: 'B-26-004', quantityDelta: 100, reasonCategory: 'New Delivery', reason: 'Emergency shipment direct delivery from vendor', status: 'applied', submittedBy: 'emp-8', createdAt: '2026-09-02T08:00:00Z' },
+  { id: 'adj-3', reference: 'ADJ-OUT-PPE-2026-00003', type: 'OUT', ppeItemId: 'ppe-4', locationId: 'loc-1', batchNumber: 'B-26-005', quantityDelta: -2, reasonCategory: 'Physical Damage', reason: 'Packaging breached by warehouse water leakage', status: 'applied', submittedBy: 'emp-8', createdAt: '2026-09-02T09:00:00Z' },
 ];
 
-export const mockTrashItems: TrashItem[] = [
-  {
-    id: 'trash-1',
-    entityType: 'Item',
-    originalId: 'ppe-old-goggle',
-    code: 'GOG-OLD-01',
-    nameEn: 'Legacy Clear Polycarbonate Goggles',
-    nameAr: 'نظارات واقية قديمة من البولي كربونات',
-    deletedBy: 'Hesham Mostafa (Admin)',
-    deletedAt: '2026-09-01T10:00:00Z',
-    reason: 'Phased out in favor of EN 166 panoramic anti-fog goggles.',
-    hasHistory: true, // Marked Retained - has history (no countdown, never auto-purged)
-    daysInTrash: 54,
-    data: {
-      itemCode: 'GOG-OLD-01',
-      nameEn: 'Legacy Clear Polycarbonate Goggles',
-      nameAr: 'نظارات واقية قديمة من البولي كربونات'
-    }
-  },
-  {
-    id: 'trash-2',
-    entityType: 'Attribute',
-    originalId: 'attr-temp-filter',
-    code: 'FILTER-SPEC',
-    nameEn: 'Temporary Filter Rating',
-    nameAr: 'تصنيف الفلتر المؤقت',
-    deletedBy: 'Hesham Mostafa (Admin)',
-    deletedAt: '2026-08-01T08:00:00Z',
-    reason: 'Consolidated into respiratory item group standard certifications.',
-    hasHistory: false, // Counts down from 90 days. 90 - 85 = 5 days left (< 7 days warning!)
-    daysInTrash: 85,
-    data: {
-      code: 'FILTER-SPEC',
-      nameEn: 'Temporary Filter Rating',
-      nameAr: 'تصنيف الفلتر المؤقت'
-    }
-  },
-  {
-    id: 'trash-3',
-    entityType: 'Kit',
-    originalId: 'kit-summer-intern',
-    code: 'KIT-INTERN',
-    nameEn: 'Summer Intern Safety Pack',
-    nameAr: 'حقيبة سلامة المتدرب الصيفي',
-    deletedBy: 'Hesham Mostafa (Admin)',
-    deletedAt: '2026-10-05T12:00:00Z',
-    reason: 'Internship season concluded.',
-    hasHistory: false,
-    daysInTrash: 20,
-    data: {
-      nameEn: 'Summer Intern Safety Pack',
-      nameAr: 'حقيبة سلامة المتدرب الصيفي',
-      jobPositionId: 'jp-10'
-    }
-  }
+export const mockScrapEntries: ScrapEntry[] = [
+  { id: 'scr-1', ppeItemId: 'ppe-1', locationId: 'loc-6', quantity: 1, reason: 'Severe crack from heavy impact at scaffold area', reversed: false, scrappedBy: 'emp-8', createdAt: '2026-08-20T10:00:00Z' },
+  { id: 'scr-2', ppeItemId: 'ppe-4', locationId: 'loc-6', quantity: 2, reason: 'Outsole delamination after chemical contact', reversed: false, scrappedBy: 'emp-8', createdAt: '2026-08-25T10:00:00Z' },
+  { id: 'scr-3', ppeItemId: 'ppe-8', locationId: 'loc-6', quantity: 1, reason: 'Torn during welding activity', reversed: true, reversedBy: 'emp-1', reversedAt: '2026-08-26T10:00:00Z', reversalReason: 'Repaired by HSE fabric maintenance team', scrappedBy: 'emp-8', createdAt: '2026-08-22T10:00:00Z' },
 ];
 
-export const mockNotifications: InAppNotification[] = [
+export const mockExpirySettings: ModuleSettings = {
+  generalLeadTimeDays: 30,
+  categoryOverrides: [
+    { riskCategory: 'I', leadTimeDays: 15 },
+    { riskCategory: 'II', leadTimeDays: 30 },
+    { riskCategory: 'III', leadTimeDays: 60 },
+  ],
+  recentIssuanceWindowDays: 90,
+  trashRetentionDays: 90,
+  siteLeadTimes: [
+    { site: 'North Field', leadTimeDays: 45 },
+    { site: 'South Field', leadTimeDays: 45 },
+  ],
+};
+
+export const mockOpeningBalances: OpeningBalance[] = [
   {
-    id: 'notif-1',
-    type: 'low_stock',
-    title: 'Low Stock Alert: MSA V-Gard Safety Helmet',
-    message: 'Available stock (35) is below reorder level (50) at Cairo Main Store.',
-    timestamp: '2026-10-25T11:00:00Z',
-    read: false,
-    severity: 'warning',
-    linkTo: '/stock'
+    id: 'ob-1',
+    locationId: 'loc-1',
+    referenceDate: '2026-08-01',
+    notes: 'Initial physical count for main warehouse kickoff',
+    status: 'Approved',
+    preparedBy: 'emp-1',
+    approvedBy: 'emp-2',
+    approvedAt: '2026-08-02T10:00:00Z',
+    createdAt: '2026-08-01T10:00:00Z',
+    lines: [
+      { id: 'obl-1', ppeItemId: 'ppe-1', batchNumber: 'B-26-001', expiryDate: '2028-08-01', quantity: 150, costPerUnit: 15.5 },
+      { id: 'obl-2', ppeItemId: 'ppe-2', batchNumber: 'B-26-002', expiryDate: '2028-08-01', quantity: 5, costPerUnit: 18.0 }
+    ]
   },
   {
-    id: 'notif-2',
-    type: 'overdue_loan',
-    title: 'Overdue Loan Alert: LN-2026-00002',
-    message: 'Loan to Omar Sherif (Petrofac) is overdue by 13 days. Host: Tarek Ibrahim.',
-    timestamp: '2026-10-25T08:00:00Z',
-    read: false,
-    severity: 'critical',
-    linkTo: '/issuances/open-loans'
-  },
-  {
-    id: 'notif-3',
-    type: 'approval_request',
-    title: 'Approval Required: Category III Stock Adjustment',
-    message: 'ADJ-IN-2026-00031 for 3M Aura Respirators (60 pcs) requires HSE Supervisor review.',
-    timestamp: '2026-10-24T14:05:00Z',
-    read: false,
-    severity: 'warning',
-    linkTo: '/stock/adjustments'
-  },
-  {
-    id: 'notif-4',
-    type: 'trash_purge_warning',
-    title: 'Trash Bin Auto-Purge Notice (5 Days Left)',
-    message: 'Attribute "FILTER-SPEC" will be permanently deleted in 5 days (no history).',
-    timestamp: '2026-10-25T00:01:00Z',
-    read: false,
-    severity: 'warning',
-    linkTo: '/trash'
+    id: 'ob-2',
+    locationId: 'loc-3',
+    referenceDate: '2026-09-01',
+    notes: 'Draft physical audit for Site B',
+    status: 'Draft',
+    preparedBy: 'emp-8',
+    createdAt: '2026-09-01T08:00:00Z',
+    lines: [
+      { id: 'obl-3', ppeItemId: 'ppe-1', batchNumber: 'B-26-003', expiryDate: '2028-09-01', quantity: 20 }
+    ]
   }
 ];
 
 export const mockAuditLogs: AuditLog[] = [
   {
-    id: 'audit-001',
-    timestampUTC: '2026-10-20T09:30:00Z',
-    user: 'Sam Store Keeper (Cairo)',
-    role: 'Store Keeper',
-    objectType: 'Loan',
-    objectReference: 'LN-2026-00001',
-    action: 'LOAN_ISSUED',
-    beforeValues: null,
-    afterValues: { recipientName: 'Kareem Fahmy', itemsCount: 1, status: 'Open' },
-    reason: 'Standard contractor safety clearance equipment loan',
-    source: 'Screen',
-    retentionFlag: '7_YEARS'
+    id: 'aud-1',
+    entityType: 'OpeningBalance',
+    entityId: 'ob-1',
+    action: 'APPROVED',
+    details: 'Opening balance approved by HSE Supervisor',
+    performedBy: 'emp-2',
+    user: 'John Doe (HSE Super)',
+    objectType: 'OpeningBalance',
+    objectReference: 'ob-1',
+    timestamp: '2026-08-02T10:00:00Z'
   },
   {
-    id: 'audit-002',
-    timestampUTC: '2026-10-24T14:00:00Z',
-    user: 'Sam Store Keeper (Cairo)',
-    role: 'Store Keeper',
+    id: 'aud-2',
+    entityType: 'StockAdjustment',
+    entityId: 'adj-2',
+    action: 'APPLIED',
+    details: 'Stock IN applied: +100 RESP-P3',
+    performedBy: 'emp-8',
+    user: 'Mike Store Keeper',
     objectType: 'StockAdjustment',
-    objectReference: 'ADJ-IN-2026-00031',
-    action: 'ADJUSTMENT_SUBMITTED',
-    beforeValues: { status: 'none' },
-    afterValues: { status: 'pending', quantityDelta: 60, riskCategory: 'Category III' },
-    reason: 'Surplus count found during annual cycle stock check in high-security respirator locker.',
-    source: 'Screen',
-    retentionFlag: '7_YEARS'
+    objectReference: 'ADJ-IN-PPE-2026-00002',
+    timestamp: '2026-09-02T08:00:00Z'
   },
   {
-    id: 'audit-003',
-    timestampUTC: '2026-10-25T09:00:00Z',
-    user: 'Hesham Mostafa (Admin)',
-    role: 'Admin',
-    objectType: 'Settings',
-    objectReference: 'MODULE_CONFIG',
-    action: 'SETTINGS_UPDATED',
-    beforeValues: { reminderLeadTimePerSite: { 'Cairo Site': 10 } },
-    afterValues: { reminderLeadTimePerSite: { 'Cairo Site': 14 } },
-    reason: 'Aligned reminder lead time with revised HSE corporate directive',
-    source: 'Screen',
-    retentionFlag: '7_YEARS'
+    id: 'aud-3',
+    entityType: 'Issuance',
+    entityId: 'iss-2',
+    action: 'ISSUED',
+    details: 'Issued 1 VEST-YEL to Ali Mahmoud',
+    performedBy: 'emp-8',
+    user: 'Mike Store Keeper',
+    objectType: 'Issuance',
+    objectReference: 'ISS-2026-00002',
+    timestamp: '2026-08-01T09:30:00Z'
   }
 ];
 
-export const mockModuleSettings: ModuleSettings = {
-  reminderLeadTimePerSite: {
-    'Main Campus': 14,
-    'Cairo Site': 14,
-    'Alexandria Site': 21
-  },
-  recentIssuanceWindowDays: 90,
-  trashRetentionDays: 90
-};
+// Epic 11: units that exist besides the PPE-056 defaults (created by the free-text unit migration for 'Box').
+// The defaults PCS, PRS and SET are added once by seedDefaultUnits at store setup.
+export const mockUnits: UnitOfMeasure[] = [
+  { id: 'uom-box', code: 'BOX', name: 'Box', symbol: 'box', active: true, deletedAt: null, createdAt: '2026-08-01T08:00:00Z', createdBy: 'migration' },
+];
+
+// Epic 12: serial units of the demo tracked item (GASDET-4G), all In Stock at Main Warehouse.
+export const mockSerialUnits: SerialUnit[] = ['SN-GD-1001', 'SN-GD-1002', 'SN-GD-1003'].map((serial, i) => ({
+  id: `sn-${i + 1}`,
+  ppeItemId: 'ppe-16',
+  serial,
+  status: 'In Stock' as const,
+  locationId: 'loc-1',
+  lastLocationId: 'loc-1',
+  batchNumber: 'B-26-006',
+  createdAt: '2026-08-02T10:00:00Z',
+  createdBy: 'emp-8',
+  updatedAt: '2026-08-02T10:00:00Z',
+  updatedBy: 'emp-8',
+}));
+
+export const mockSerialEvents: SerialEvent[] = mockSerialUnits.map((u, i) => ({
+  id: `sev-${i + 1}`,
+  serialUnitId: u.id,
+  type: 'Stock in' as const,
+  date: u.createdAt,
+  userId: 'emp-8',
+  toLocationId: 'loc-1',
+  reference: 'B-26-006',
+}));

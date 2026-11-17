@@ -3,24 +3,41 @@ import { generateId } from '../lib/utils';
 import * as mockData from './mockData';
 import { 
   JobPosition, Location, Attribute, ItemGroup, PPEItem, Kit, Employee, 
-  Batch, StockBalance, StockMovement, StockAdjustment, Issuance, IssuanceReturn, 
-  VisitorLoan, ScrapEntry, OpeningBalance, AuditLog, TrashItem, InAppNotification, 
-  ModuleSettings, Role, BaseEntity
+  StockBalance, StockMovement, StockAdjustment, Issuance, IssuanceReturn, 
+  ScrapEntry, ModuleSettings, BaseEntity, OpeningBalance, Batch, AuditLog, LoanLineItem,
+  UnitOfMeasure, SerialUnit, SerialEvent, SerialStatus
 } from '../types';
+import { addDays, addMonths, addYears } from 'date-fns';
+import { seedDefaultUnits, SystemFlags } from './migrations';
+import { registerSerialUnits, moveSerialUnits, MoveParams } from './serialEngine';
+import { SerialEntryError, validateSerialEntry } from '../lib/serials';
+
+export interface InUseCheckResult {
+  inUse: boolean;
+  reasons: string[];
+}
+
+export type ActionResult = { success: boolean; message?: string };
+
+/** G2: Admin override reason must be at least this long (PPE-002). */
+export const OVERRIDE_REASON_MIN = 10;
+
+/** PPE-051: one word, letters, digits, dash or underscore. */
+export const UNIT_CODE_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** Entity collections that support Trash Bin (G10). */
+export type TrashableCollection = 'ppeItems' | 'locations' | 'attributes' | 'itemGroups' | 'kits' | 'units';
+
+const isScrapLocation = (l?: Location) => !!l && (l.stockCondition === 'Scrap' || l.locationType === 'Scrap');
+
+/** Stock OUT reasons (PPE-026) that destroy a serial unit rather than write it off. */
+const SCRAP_REASONS = ['Physical Damage', 'Expired Disposal', 'Damaged', 'Damaged in Store', 'Expired'];
+const isQuarantineReason = (r?: string) => !!r && r.toLowerCase().startsWith('quarantin');
 
 export interface AppState {
-  // Current user & RBAC
   currentUser: Employee;
   setCurrentUser: (user: Employee) => void;
-  selectedStoreKeeperPersonaId: string;
-  setSelectedStoreKeeperPersonaId: (id: string) => void;
   
-  // External service status
-  isEmployeeMasterOnline: boolean;
-  toggleEmployeeMasterStatus: () => void;
-  cachedEmployees: Employee[];
-
-  // Master Data
   jobPositions: JobPosition[];
   locations: Location[];
   attributes: Attribute[];
@@ -28,139 +45,220 @@ export interface AppState {
   ppeItems: PPEItem[];
   kits: Kit[];
   employees: Employee[];
-
-  // Inventory & Stock
-  batches: Batch[];
-  stockMovements: StockMovement[];
+  stockBalances: StockBalance[];
   stockAdjustments: StockAdjustment[];
-  openingBalances: OpeningBalance[];
-  scrapEntries: ScrapEntry[];
-
-  // Operations
+  stockMovements: StockMovement[];
   issuances: Issuance[];
   issuanceReturns: IssuanceReturn[];
-  visitorLoans: VisitorLoan[];
-
-  // System Foundation
+  scrapEntries: ScrapEntry[];
+  expirySettings: ModuleSettings;
+  moduleSettings: ModuleSettings;
+  openingBalances: OpeningBalance[];
+  batches: Batch[];
   auditLogs: AuditLog[];
-  trashItems: TrashItem[];
-  notifications: InAppNotification[];
-  settings: ModuleSettings;
+  units: UnitOfMeasure[];
+  serialUnits: SerialUnit[];
+  serialEvents: SerialEvent[];
+  systemFlags: SystemFlags;
 
-  // Actions
-  writeAuditLog: (log: Omit<AuditLog, 'id' | 'timestampUTC' | 'retentionFlag'>) => void;
-  addNotification: (notif: Omit<InAppNotification, 'id' | 'timestamp' | 'read'>) => void;
-  markNotificationRead: (id: string) => void;
-  clearAllNotifications: () => void;
-  runNightlyCronJobs: () => { reminderCount: number; overdueLoanCount: number; autoPurgedCount: number };
+  // Units of Measure (Epic 11)
+  unitUsage: (unitId: string) => { itemIds: string[]; itemCount: number; trashedItemCount: number };
+  runDefaultUnitSeed: () => { created: string[] };
+  getUnitSymbol: (ppeItemId?: string) => string;
 
-  // Master Data CRUD with in-use checks & Audit Log
-  savePPEItem: (item: PPEItem, reason?: string) => void;
-  trashPPEItem: (id: string, reason: string) => void;
-  saveAttribute: (attribute: Attribute, reason?: string) => void;
-  trashAttribute: (id: string, reason: string) => void;
-  saveItemGroup: (group: ItemGroup, reason?: string) => void;
-  trashItemGroup: (id: string, reason: string) => void;
-  saveLocation: (location: Location, reason?: string) => void;
-  trashLocation: (id: string, reason: string) => void;
-  saveKit: (kit: Kit, reason?: string) => void;
-  trashKit: (id: string, reason: string) => void;
-  restoreTrashItem: (trashId: string, newCode?: string) => { success: boolean; error?: string };
+  // Serial Numbers (Epic 12)
+  describeSerialLocation: (unit: SerialUnit) => string;
+  validateNewSerials: (ppeItemId: string, serials: string[]) => SerialEntryError[];
+  inStockSerials: (ppeItemId: string, locationId: string, batchNumber?: string) => SerialUnit[];
+  visibleSerialUnits: (user?: Employee) => SerialUnit[];
 
-  // Stock Management (OB, IN, OUT, Quarantine, Transfers)
-  postOpeningBalance: (locationId: string, lines: { ppeItemId: string; variantKey?: string; batchNumber: string; expiryDate?: string; quantity: number; costPerUnit?: number }[]) => void;
-  closeOpeningBalanceForLocation: (locationId: string) => void;
-  recordStockIn: (params: {
-    locationId: string;
-    ppeItemId: string;
-    variantKey?: string;
-    batchNumber: string;
-    quantity: number;
-    manufacturerExpiryDate?: string;
-    supplierDeliveryNote?: string;
-    reasonCategory: string;
-    reasonDetail: string;
-  }) => { requiresApproval: boolean; reference: string };
-  recordStockOut: (params: {
-    locationId: string;
-    ppeItemId: string;
-    variantKey?: string;
-    batchNumber: string;
-    quantity: number;
-    reasonCategory: string;
-    reasonDetail: string;
-    quarantineReason?: string;
-  }) => { requiresApproval: boolean; reference: string };
-  releaseQuarantine: (batchId: string, releaseReason: string) => void;
-  reviewAdjustment: (adjustmentId: string, action: 'approved' | 'rejected', reviewerId: string) => { success: boolean; error?: string };
-  transferStock: (params: {
-    ppeItemId: string;
-    fromLocationId: string;
-    toLocationId: string;
-    batchNumber: string;
-    quantity: number;
-  }) => { success: boolean; error?: string; overcapacityWarning?: boolean };
+  // G1 Audit Logger
+  recordAudit: (params: {
+    action: string;
+    objectType: string;
+    objectReference: string;
+    before?: any;
+    after?: any;
+    details?: string;
+    reason?: string;
+    performedBy?: string;
+  }) => void;
 
-  // Issuance, Returns, Loans
-  issueSinglePPE: (issuanceData: Omit<Issuance, 'id' | 'reference' | 'status' | 'createdAt'>) => string;
-  issueKitPPE: (params: {
+  // G2 In-Use Protection Engine
+  checkInUse: (entityName: 'ppeItems' | 'locations' | 'attributes' | 'itemGroups' | 'kits', id: string) => InUseCheckResult;
+  itemHasTransactions: (itemId: string) => boolean;
+  locationHasStock: (locationId: string) => boolean;
+  saveEntity: <T extends BaseEntity>(entityName: keyof AppState, entity: T, reason?: string) => ActionResult;
+  softDeleteEntity: (entityName: keyof AppState, id: string, overrideReason?: string) => ActionResult;
+  toggleEntityActive: (entityName: keyof AppState, id: string, active: boolean, overrideReason?: string) => ActionResult;
+  restoreEntity: (entityName: keyof AppState, id: string, newCode?: string) => ActionResult & { codeTaken?: boolean };
+  purgeEntity: (entityName: keyof AppState, id: string) => ActionResult;
+  purgeEligibleTrash: () => { purgedCount: number };
+
+  // Stock & Opening Balance
+  saveOpeningBalance: (ob: OpeningBalance) => ActionResult;
+  approveOpeningBalance: (id: string, approverId: string) => ActionResult;
+  rejectOpeningBalance: (id: string, reason: string) => void;
+  closeOpeningBalance: (locationId: string, byId: string) => void;
+
+  // Stock Adjustments & Movements
+  adjustStock: (adjustment: any) => { success: boolean; message?: string; id?: string };
+  reviewAdjustment: (id: string, status: 'approved' | 'rejected', reviewerId: string) => ActionResult;
+  transferStock: (ppeItemId: string, fromLocationId: string, toLocationId: string, batchNumber: string, quantity: number, byId: string, serialIds?: string[]) => ActionResult;
+  
+  // G9 Quarantine Management
+  quarantineBatch: (batchId: string, quantity: number, reason: string, byId: string) => void;
+  releaseQuarantineBatch: (batchId: string, quantity: number, byId: string) => void;
+
+  // Issuances & Kits
+  calculateLifespanDate: (item: PPEItem, startDate?: Date) => string;
+  validateGenderMatch: (employeeId: string, ppeItemId: string, variantValueId?: string) => { valid: boolean; reason?: string };
+  issueItem: (issuance: Omit<Issuance, 'id' | 'status'>) => { success: boolean; id: string; message?: string };
+  issueKit: (data: {
     employeeId: string;
     kitId: string;
     locationId: string;
-    lines: { ppeItemId: string; variantKey: string; quantity: number }[];
-    storeKeeperSignature: string;
-    receiverSignature: string;
-  }) => { issuedCount: number; skippedCount: number };
-  returnPPE: (params: {
-    issuanceId: string;
     quantity: number;
-    condition: 'good' | 'damaged' | 'worn_out' | 'lost';
-    physicalReceiptConfirmed: boolean;
+    itemVariants?: Record<string, string>;
+    selectedItemIds?: string[];
+    itemSerials?: Record<string, string[]>; // PPE-058: serial unit ids per tracked kit item
     storeKeeperSignature?: string;
     receiverSignature?: string;
-  }) => { success: boolean; error?: string };
-  issueVisitorLoan: (loanData: Omit<VisitorLoan, 'id' | 'loanNumber' | 'status' | 'createdAt'>) => string;
-  returnLoanLine: (params: {
-    loanId: string;
-    lineId: string;
-    returnedQuantity: number;
-    condition: 'good' | 'damaged' | 'lost';
-    storeKeeperSignature: string;
-    recipientSignature: string;
-  }) => { success: boolean; error?: string };
+    issuedBy: string;
+  }) => { success: boolean; issuanceIds: string[]; message?: string };
 
-  // Settings & Access Matrix
-  updateSettings: (newSettings: Partial<ModuleSettings>, reason: string) => void;
-  updateStoreKeeperAssignments: (storeKeeperId: string, locationIds: string[]) => void;
-  importHistoricalIssuances: (rows: Array<{
-    employeeId: string;
-    itemCode: string;
-    variantKey?: string;
-    quantity: number;
-    issueDate: string;
-    locationId?: string;
-  }>) => { importedCount: number; batchId: string };
-  reverseScrap: (scrapId: string, reason: string) => void;
+  // Loans (PPE-036, PPE-037, PPE-041)
+  issueLoan: (data: {
+    holderName: string;
+    holderType: string;
+    companyName?: string;
+    contactNumber?: string;
+    hostEmployeeId?: string;
+    locationId: string;
+    expectedReturnDate: string;
+    items: { ppeItemId: string; quantity: number; batchNumber?: string; serialIds?: string[] }[];
+    storeKeeperSignature?: string;
+    receiverSignature?: string;
+    issuedBy: string;
+  }) => { success: boolean; reference: string; id?: string; message?: string };
+  returnLoan: (data: {
+    loanId: string;
+    returnedLines: { lineId: string; quantity: number; condition: 'good' | 'damaged' | 'worn_out' | 'lost'; serialIds?: string[] }[];
+    storeKeeperSignature?: string;
+    receiverSignature?: string;
+    returnedBy: string;
+  }) => { success: boolean; message?: string };
+  returnLoanLine: (issuanceId: string, lineId: string, condition: 'good' | 'damaged' | 'worn_out' | 'lost', returnedBy: string) => void;
+
+  // Returns & Scrap
+  returnItem: (
+    issuanceId: string, 
+    condition: 'good' | 'damaged' | 'worn_out' | 'lost', 
+    physicalReceiptConfirmed: boolean, 
+    returnedBy: string,
+    options?: {
+      quantity?: number;
+      storeKeeperSignature?: string;
+      employeeSignature?: string;
+      serialIds?: string[]; // PPE-058: returned serial units of a tracked item
+    }
+  ) => ActionResult;
+  reverseScrap: (id: string, reason: string, reversedBy: string) => void;
+
+  // Employee Lifecycle & Tracking (PPE-042, PPE-043, G12)
+  setEmployeeStatus: (employeeId: string, status: 'Active' | 'Terminated' | 'Transferred' | 'Inactive', byId: string) => void;
+
+  // Historical Import (PPE-044)
+  importHistoricalIssuances: (imported: Partial<Issuance>[], byId: string) => { count: number };
+
+  // Module Settings (PPE-050)
+  updateModuleSettings: (settings: Partial<ModuleSettings>) => void;
+  updateExpirySettings: (settings: ModuleSettings) => void;
 }
 
-export const usePPEStore = create<AppState>((set, get) => ({
-  currentUser: mockData.mockEmployees[0], // Default Admin
-  setCurrentUser: (user) => set({ currentUser: user }),
-  selectedStoreKeeperPersonaId: 'emp-8', // Sam by default
-  setSelectedStoreKeeperPersonaId: (id) => {
-    const found = get().employees.find(e => e.id === id);
-    if (found) {
-      set({ selectedStoreKeeperPersonaId: id, currentUser: found });
+/** PPE-057: every tracked line of an opening balance needs valid, unique serials (across all its lines too). */
+function validateOpeningBalanceSerials(state: AppState, ob: OpeningBalance): string | null {
+  const byItem = new Map<string, string[]>();
+  for (const line of ob.lines) {
+    const item = state.ppeItems.find(p => p.id === line.ppeItemId);
+    if (!item?.serialTracked) continue;
+    const serials = line.serialNumbers || [];
+    if (serials.length === 0) return `${item.itemCode} is serial tracked: enter one serial number per unit.`;
+    byItem.set(item.id, [...(byItem.get(item.id) || []), ...serials]);
+  }
+  for (const [itemId, serials] of byItem) {
+    const errors = state.validateNewSerials(itemId, serials);
+    if (errors.length > 0) return errors[0].message;
+  }
+  return null;
+}
+
+/** Decrease batch availability by one per serial, grouped by the serial's batch. */
+function deductSerialBatches(batches: Batch[], units: SerialUnit[], locationId: string): Batch[] {
+  const next = [...batches];
+  const counts = new Map<string, number>();
+  for (const u of units) if (u.batchNumber) counts.set(u.batchNumber, (counts.get(u.batchNumber) || 0) + 1);
+  for (const [batchNumber, n] of counts) {
+    const idx = next.findIndex(b => b.batchNumber === batchNumber && b.ppeItemId === units[0].ppeItemId && b.locationId === locationId);
+    if (idx >= 0) {
+      const avail = Math.max(0, next[idx].availableQty - n);
+      next[idx] = { ...next[idx], availableQty: avail, status: avail <= 0 ? 'Depleted' : 'Active' };
     }
-  },
+  }
+  return next;
+}
 
-  isEmployeeMasterOnline: true,
-  toggleEmployeeMasterStatus: () => set(state => ({
-    isEmployeeMasterOnline: !state.isEmployeeMasterOnline,
-    cachedEmployees: state.employees
-  })),
-  cachedEmployees: mockData.mockEmployees,
+/**
+ * PPE-058 Stock OUT: the picked units take the reason's status. Routed to a Scrap location or a
+ * damage / disposal reason means Scrapped; any other reason means Written off.
+ */
+function stockOutMove(adjustment: any, ppeItemId: string, serialIds: string[]): MoveParams {
+  const scrapped = !!adjustment.destinationLocationId || SCRAP_REASONS.includes(adjustment.reasonCategory);
+  return {
+    ppeItemId,
+    serialIds,
+    expect: { status: 'In Stock', locationId: adjustment.locationId },
+    to: { status: scrapped ? 'Scrapped' : 'Written off', locationId: adjustment.destinationLocationId || undefined },
+    eventTypes: [scrapped ? 'Scrap' : 'Write off'],
+    userId: adjustment.submittedBy,
+    reference: adjustment.reference,
+    note: `${adjustment.reasonCategory}: ${adjustment.reason}`,
+  };
+}
 
+/**
+ * PPE-037 / PPE-038: where a returned serial goes. Good goes back In Stock (the Used location),
+ * Damaged or Worn out is scrapped automatically, Lost (or damage not physically received) is written off.
+ */
+function serialReturnTarget(
+  condition: 'good' | 'damaged' | 'worn_out' | 'lost',
+  usedLocationId: string,
+  scrapLocationId: string,
+  physicallyReceived = true
+): { to: MoveParams['to']; extraEvents: MoveParams['eventTypes'] } {
+  if (condition === 'good') return { to: { status: 'In Stock', locationId: usedLocationId }, extraEvents: [] };
+  if ((condition === 'damaged' || condition === 'worn_out') && physicallyReceived) {
+    return { to: { status: 'Scrapped', locationId: scrapLocationId }, extraEvents: ['Scrap'] };
+  }
+  return { to: { status: 'Written off' }, extraEvents: ['Write off'] };
+}
+
+/** Add (or subtract) quantity on a stock balance row, creating it when needed. */
+function bumpBalance(balances: StockBalance[], ppeItemId: string, locationId: string, delta: number): StockBalance[] {
+  const next = [...balances];
+  const idx = next.findIndex(b => b.ppeItemId === ppeItemId && b.locationId === locationId);
+  if (idx >= 0) next[idx] = { ...next[idx], quantityOnHand: Math.max(0, next[idx].quantityOnHand + delta) };
+  else if (delta > 0) next.push({ id: generateId(), ppeItemId, locationId, quantityOnHand: delta, quarantinedOnHand: 0 });
+  return next;
+}
+
+// PPE-056: default units are created once at setup, guarded by the one-time marker.
+const initialUnitSeed = seedDefaultUnits(mockData.mockUnits, {}, '2026-08-01T08:00:00Z');
+
+export const usePPEStore = create<AppState>((set, get) => ({
+  currentUser: mockData.mockEmployees[0], // Admin by default
+  setCurrentUser: (user) => set({ currentUser: user }),
+  
   jobPositions: mockData.mockJobPositions,
   locations: mockData.mockLocations,
   attributes: mockData.mockAttributes,
@@ -168,1632 +266,1974 @@ export const usePPEStore = create<AppState>((set, get) => ({
   ppeItems: mockData.mockPPEItems,
   kits: mockData.mockKits,
   employees: mockData.mockEmployees,
-
-  batches: mockData.mockBatches,
-  stockMovements: [],
+  stockBalances: mockData.mockStockBalances,
   stockAdjustments: mockData.mockStockAdjustments,
-  openingBalances: [],
-  scrapEntries: [],
-
+  stockMovements: [],
   issuances: mockData.mockIssuances,
   issuanceReturns: mockData.mockIssuanceReturns,
-  visitorLoans: mockData.mockVisitorLoans,
-
+  scrapEntries: mockData.mockScrapEntries,
+  expirySettings: mockData.mockExpirySettings,
+  moduleSettings: mockData.mockExpirySettings,
+  openingBalances: mockData.mockOpeningBalances,
+  batches: mockData.mockBatches,
   auditLogs: mockData.mockAuditLogs,
-  trashItems: mockData.mockTrashItems,
-  notifications: mockData.mockNotifications,
-  settings: mockData.mockModuleSettings,
+  units: initialUnitSeed.units,
+  serialUnits: mockData.mockSerialUnits,
+  serialEvents: mockData.mockSerialEvents,
+  systemFlags: initialUnitSeed.flags,
 
-  writeAuditLog: (log) => {
-    const entry: AuditLog = {
-      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      timestampUTC: new Date().toISOString(),
-      retentionFlag: '7_YEARS',
-      ...log
+  // ---------------------------------------------------------------------------
+  // Units of Measure (Epic 11)
+  // ---------------------------------------------------------------------------
+  unitUsage: (unitId) => {
+    const users = get().ppeItems.filter(p => p.unitId === unitId);
+    return {
+      itemIds: users.filter(p => !p.deletedAt).map(p => p.id),
+      itemCount: users.filter(p => !p.deletedAt).length, // PPE-053: active + inactive, excludes trashed
+      trashedItemCount: users.filter(p => !!p.deletedAt).length,
     };
-    set(state => ({ auditLogs: [entry, ...state.auditLogs] }));
   },
 
-  addNotification: (notif) => {
-    const item: InAppNotification = {
-      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      ...notif
-    };
-    set(state => ({ notifications: [item, ...state.notifications] }));
-  },
-
-  markNotificationRead: (id) => {
-    set(state => ({
-      notifications: state.notifications.map(n => n.id === id ? { ...n, read: true } : n)
-    }));
-  },
-
-  clearAllNotifications: () => {
-    set({ notifications: [] });
-  },
-
-  runNightlyCronJobs: () => {
+  runDefaultUnitSeed: () => {
     const state = get();
-    const today = new Date();
-    let reminderCount = 0;
-    let overdueLoanCount = 0;
-    let autoPurgedCount = 0;
+    const res = seedDefaultUnits(state.units, state.systemFlags);
+    if (res.created.length === 0 && state.systemFlags.defaultUnitsSeeded) return { created: [] };
+    set({ units: res.units, systemFlags: res.flags });
+    if (res.created.length > 0) {
+      get().recordAudit({
+        action: 'CREATE',
+        objectType: 'units',
+        objectReference: res.created.join(', '),
+        details: `Default units seeded: ${res.created.join(', ')}`,
+        performedBy: 'system',
+      });
+    }
+    return { created: res.created };
+  },
 
-    // 1. Replacement Reminders (BD-I473 & NEW-07)
-    state.issuances.forEach(iss => {
-      if (iss.status !== 'issued' || !iss.expectedReplacementDate) return;
-      const emp = state.employees.find(e => e.id === iss.employeeId);
-      if (!emp || emp.status === 'Terminated' || emp.status === 'Transferred') return;
+  getUnitSymbol: (ppeItemId) => {
+    const state = get();
+    const item = state.ppeItems.find(p => p.id === ppeItemId);
+    return state.units.find(u => u.id === item?.unitId)?.symbol || '';
+  },
 
-      const loc = state.locations.find(l => l.id === iss.locationId);
-      const site = loc ? loc.site : 'Cairo Site';
-      const leadTimeDays = state.settings.reminderLeadTimePerSite[site] || 14;
+  // ---------------------------------------------------------------------------
+  // Serial Numbers (Epic 12)
+  // ---------------------------------------------------------------------------
+  describeSerialLocation: (unit) => {
+    const state = get();
+    const locName = (id?: string) => state.locations.find(l => l.id === id)?.name || id || '-';
+    switch (unit.status) {
+      case 'In Stock': return `In Stock at ${locName(unit.locationId)}`;
+      case 'Issued': {
+        const emp = state.employees.find(e => e.id === unit.holderEmployeeId);
+        return `Issued to ${emp ? `${emp.name} (${emp.employeeCode})` : unit.holderEmployeeId || 'an employee'}`;
+      }
+      case 'On Loan': return `On Loan to ${unit.holderName || 'a borrower'}`;
+      case 'Scrapped': return unit.locationId ? `Scrapped at ${locName(unit.locationId)}` : 'Scrapped';
+      case 'Written off': return 'Written off';
+    }
+  },
 
-      const replDate = new Date(iss.expectedReplacementDate);
-      const diffDays = Math.ceil((replDate.getTime() - today.getTime()) / (1000 * 3600 * 24));
+  validateNewSerials: (ppeItemId, serials) => {
+    const state = get();
+    const byItem = new Map(state.serialUnits.filter(u => u.ppeItemId === ppeItemId).map(u => [u.serial, u]));
+    return validateSerialEntry(serials, s => {
+      const u = byItem.get(s);
+      return u ? state.describeSerialLocation(u) : null;
+    });
+  },
 
-      if (diffDays <= leadTimeDays && diffDays >= 0) {
-        reminderCount++;
-        const ppe = state.ppeItems.find(p => p.id === iss.ppeItemId);
-        const itemName = ppe ? ppe.nameEn : 'PPE Item';
+  inStockSerials: (ppeItemId, locationId, batchNumber) =>
+    get().serialUnits
+      .filter(u => u.ppeItemId === ppeItemId && u.status === 'In Stock' && u.locationId === locationId && (!batchNumber || u.batchNumber === batchNumber))
+      .sort((a, b) => a.serial.localeCompare(b.serial)),
 
-        // Notify
-        state.addNotification({
-          type: 'replacement_reminder',
-          title: `Replacement Reminder: ${emp.name}`,
-          message: `${itemName} is due for replacement on ${iss.expectedReplacementDate} (${diffDays} days remaining).`,
-          severity: 'warning',
-          linkTo: '/issuances/replacements-due'
-        });
+  // PPE-059 / PPE-023: Store Keepers see only serials at (or last at) their assigned locations.
+  visibleSerialUnits: (user) => {
+    const state = get();
+    const u = user || state.currentUser;
+    if (u.role === 'Admin' || u.role === 'HSE Supervisor') return state.serialUnits;
+    if (u.role === 'Store Keeper') {
+      const mine = new Set(state.locations.filter(l => l.assignedStoreKeeperIds?.includes(u.id)).map(l => l.id));
+      return state.serialUnits.filter(s => mine.has(s.locationId || s.lastLocationId));
+    }
+    return [];
+  },
 
-        // If employee has no email, log partial failure (BD-I473)
-        if (!emp.email || emp.email.trim() === '') {
-          state.writeAuditLog({
-            user: 'SYSTEM_CRON',
-            role: 'Admin',
-            objectType: 'Issuance',
-            objectReference: iss.reference,
-            action: 'REMINDER_EMAIL_FAILED_NO_ADDRESS',
-            beforeValues: null,
-            afterValues: { employeeId: emp.id, employeeName: emp.name },
-            reason: `Email dispatch failed: Employee ${emp.name} has no email address configured in Employee Master.`,
-            source: 'System Job'
-          });
+  // G1 Immutable Audit Trail
+  recordAudit: ({ action, objectType, objectReference, before, after, details, reason, performedBy }) => {
+    const user = performedBy || get().currentUser.id;
+    const emp = get().employees.find(e => e.id === user);
+    const newLog: AuditLog = {
+      id: generateId(),
+      entityType: objectType as any,
+      entityId: objectReference,
+      action,
+      details: details || (reason ? `${action} - ${reason}` : action),
+      performedBy: user,
+      user: emp ? `${emp.name} (${emp.role})` : user,
+      objectType,
+      objectReference,
+      before: before ? JSON.parse(JSON.stringify(before)) : undefined,
+      after: after ? JSON.parse(JSON.stringify(after)) : undefined,
+      reason,
+      timestamp: new Date().toISOString()
+    };
+    set((state) => ({ auditLogs: [newLog, ...state.auditLogs] }));
+  },
+
+  itemHasTransactions: (itemId: string) => {
+    const state = get();
+    const hasIssuances = state.issuances.some(i => i.ppeItemId === itemId || (i.lines && i.lines.some(l => l.ppeItemId === itemId)));
+    const hasAdjustments = state.stockAdjustments.some(a => a.ppeItemId === itemId);
+    const hasMovements = state.stockMovements.some(m => m.ppeItemId === itemId);
+    const hasBatches = state.batches.some(b => b.ppeItemId === itemId);
+    // Opening balance lines count once submitted (a Draft is not a transaction yet).
+    const hasOpeningBalance = state.openingBalances.some(o => o.status !== 'Draft' && o.status !== 'Rejected' && o.lines.some(l => l.ppeItemId === itemId));
+    const hasSerials = state.serialUnits.some(u => u.ppeItemId === itemId);
+    const hasScrap = state.scrapEntries.some(s => s.ppeItemId === itemId);
+    return hasIssuances || hasAdjustments || hasMovements || hasBatches || hasOpeningBalance || hasSerials || hasScrap;
+  },
+
+  locationHasStock: (locationId: string) => {
+    const state = get();
+    return state.stockBalances.some(b => b.locationId === locationId && b.quantityOnHand > 0);
+  },
+
+  // G2 In-Use Protection Engine
+  checkInUse: (entityName, id) => {
+    const state = get();
+    const reasons: string[] = [];
+
+    if (entityName === 'ppeItems') {
+      const activeHoldings = state.issuances.filter(i => (i.ppeItemId === id || (i.lines && i.lines.some(l => l.ppeItemId === id))) && i.status === 'issued');
+      if (activeHoldings.length > 0) {
+        reasons.push(`Currently held by ${activeHoldings.length} employee(s) or active loan(s).`);
+      }
+      const positiveStock = state.stockBalances.filter(b => b.ppeItemId === id && b.quantityOnHand > 0);
+      if (positiveStock.length > 0) {
+        const totalStock = positiveStock.reduce((acc, curr) => acc + curr.quantityOnHand, 0);
+        reasons.push(`Positive stock balance exists (${totalStock} units on hand across locations).`);
+      }
+      const attachedKits = state.kits.filter(k => k.active && !k.deletedAt && k.items.some(ki => ki.ppeItemId === id));
+      if (attachedKits.length > 0) {
+        reasons.push(`Included in ${attachedKits.length} active kit(s).`);
+      }
+    } else if (entityName === 'locations') {
+      const loc = state.locations.find(l => l.id === id);
+      const isScrap = loc?.stockCondition === 'Scrap' || loc?.locationType === 'Scrap';
+      if (loc && !isScrap) {
+        const positiveStock = state.stockBalances.filter(b => b.locationId === id && b.quantityOnHand > 0);
+        if (positiveStock.length > 0) {
+          reasons.push(`Location holds active stock balance (${positiveStock.length} items with positive quantity). Hard block: stock must be moved first.`);
         }
       }
-    });
-
-    // 2. Overdue Loans (BD-I470 & NEW-08)
-    const updatedLoans = state.visitorLoans.map(loan => {
-      if (loan.status === 'Open' || loan.status === 'Partially Returned') {
-        const retDate = new Date(loan.expectedReturnDate);
-        if (retDate < today) {
-          overdueLoanCount++;
-          state.addNotification({
-            type: 'overdue_loan',
-            title: `Overdue Loan: ${loan.loanNumber}`,
-            message: `Loan to ${loan.recipientName} (${loan.recipientCompany}) passed expected return date (${loan.expectedReturnDate}).`,
-            severity: 'critical',
-            linkTo: '/issuances/open-loans'
-          });
-          return { ...loan, status: 'Overdue' as const };
+      const openLoans = state.issuances.filter(i => i.locationId === id && (i.isLoan || !!i.expectedReturnDate) && i.status !== 'returned');
+      if (openLoans.length > 0) {
+        reasons.push(`Location has ${openLoans.length} open loan(s) that must be closed first.`);
+      }
+      const soleLocationItems = state.ppeItems.filter(p => p.active && !p.deletedAt && p.locationIds.length === 1 && p.locationIds[0] === id);
+      if (soleLocationItems.length > 0) {
+        reasons.push(`Location is the only storage location for ${soleLocationItems.length} active item(s).`);
+      }
+    } else if (entityName === 'attributes') {
+      const linkedGroups = state.itemGroups.filter(g => g.active && !g.deletedAt && g.attributeIds.includes(id));
+      if (linkedGroups.length > 0) {
+        reasons.push(`Assigned to ${linkedGroups.length} active item group(s).`);
+      }
+      const usedByItems = state.ppeItems.filter(p => p.active && !p.deletedAt && p.variantAttributeValueIds?.length);
+      if (usedByItems.length > 0) {
+        const attr = state.attributes.find(a => a.id === id);
+        const valIds = attr?.values.map(v => v.id) || [];
+        const itemsWithAttr = usedByItems.filter(p => p.variantAttributeValueIds?.some(v => valIds.includes(v)));
+        if (itemsWithAttr.length > 0) {
+          reasons.push(`Values are referenced by ${itemsWithAttr.length} active item(s).`);
         }
       }
-      return loan;
-    });
-
-    // 3. Trash Bin 90-day countdown & Auto-Purge (NEW-04)
-    const updatedTrash: TrashItem[] = [];
-    state.trashItems.forEach(tItem => {
-      if (tItem.hasHistory) {
-        // Records with history are never auto-purged
-        updatedTrash.push(tItem);
-      } else {
-        const newDaysInTrash = tItem.daysInTrash + 1;
-        const daysLeft = state.settings.trashRetentionDays - newDaysInTrash;
-
-        if (daysLeft <= 0) {
-          // Auto-purge eligible record without history
-          autoPurgedCount++;
-          state.writeAuditLog({
-            user: 'SYSTEM_CRON',
-            role: 'Admin',
-            objectType: tItem.entityType,
-            objectReference: tItem.code,
-            action: 'AUTO_PURGED',
-            beforeValues: tItem.data,
-            afterValues: null,
-            reason: `Auto-purged after exceeding ${state.settings.trashRetentionDays} days in Trash Bin with no historical transactions.`,
-            source: 'System Job'
-          });
-        } else {
-          if (daysLeft === 7) {
-            // 7-day advance Admin warning
-            state.addNotification({
-              type: 'trash_purge_warning',
-              title: `Trash Auto-Purge in 7 Days: ${tItem.code}`,
-              message: `${tItem.entityType} "${tItem.nameEn}" has no historical transactions and will be auto-purged in 7 days.`,
-              severity: 'warning',
-              linkTo: '/trash'
-            });
+    } else if (entityName === 'itemGroups') {
+      const activeItems = state.ppeItems.filter(p => p.active && !p.deletedAt && p.itemGroupId === id);
+      if (activeItems.length > 0) {
+        reasons.push(`Associated with ${activeItems.length} active PPE item(s).`);
+      }
+    } else if (entityName === 'kits') {
+      const activeKitIssuances = state.issuances.filter(i => i.kitId === id && i.status === 'issued');
+      if (activeKitIssuances.length > 0) {
+        reasons.push(`Currently referenced by active issuances.`);
+      }
+      // PPE-029: sole active kit of a position with recent issuances in last 90 days
+      const kit = state.kits.find(k => k.id === id);
+      if (kit) {
+        const otherActiveKits = state.kits.filter(k => k.id !== id && k.jobPositionId === kit.jobPositionId && k.active && !k.deletedAt);
+        if (otherActiveKits.length === 0) {
+          const recentThreshold = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+          const hasRecent = state.issuances.some(i => i.kitId === id && new Date(i.issueDate) >= recentThreshold);
+          if (hasRecent) {
+            reasons.push(`Sole active kit for position with issuances in the last 90 days.`);
           }
-          updatedTrash.push({ ...tItem, daysInTrash: newDaysInTrash });
         }
       }
-    });
-
-    set({ visitorLoans: updatedLoans, trashItems: updatedTrash });
-    return { reminderCount, overdueLoanCount, autoPurgedCount };
-  },
-
-  savePPEItem: (item, reason) => {
-    const state = get();
-    const existing = state.ppeItems.find(p => p.id === item.id);
-    const user = state.currentUser;
-
-    if (existing) {
-      set({
-        ppeItems: state.ppeItems.map(p => p.id === item.id ? item : p)
-      });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Item',
-        objectReference: item.itemCode,
-        action: existing.active !== item.active ? (item.active ? 'ACTIVATED' : 'DEACTIVATED') : 'EDITED',
-        beforeValues: existing,
-        afterValues: item,
-        reason: reason || 'Item details updated',
-        source: 'Screen'
-      });
-    } else {
-      const newItem = { ...item, id: item.id || `ppe-${Date.now()}` };
-      set({ ppeItems: [...state.ppeItems, newItem] });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Item',
-        objectReference: item.itemCode,
-        action: 'CREATED',
-        beforeValues: null,
-        afterValues: newItem,
-        reason: reason || 'New catalog item added',
-        source: 'Screen'
-      });
     }
-  },
 
-  trashPPEItem: (id, reason) => {
-    const state = get();
-    const item = state.ppeItems.find(p => p.id === id);
-    if (!item) return;
-
-    // Check if item has transactions
-    const hasHistory = state.issuances.some(i => i.ppeItemId === id) ||
-                       state.batches.some(b => b.ppeItemId === id) ||
-                       state.visitorLoans.some(l => l.items.some(li => li.ppeItemId === id));
-
-    const trashEntry: TrashItem = {
-      id: `trash-${Date.now()}`,
-      entityType: 'Item',
-      originalId: item.id,
-      code: item.itemCode,
-      nameEn: item.nameEn,
-      nameAr: item.nameAr,
-      deletedBy: state.currentUser.name,
-      deletedAt: new Date().toISOString(),
-      reason,
-      hasHistory,
-      daysInTrash: 0,
-      data: item
+    return {
+      inUse: reasons.length > 0,
+      reasons
     };
-
-    set({
-      ppeItems: state.ppeItems.filter(p => p.id !== id),
-      trashItems: [trashEntry, ...state.trashItems]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Item',
-      objectReference: item.itemCode,
-      action: 'TRASHED',
-      beforeValues: item,
-      afterValues: { trashed: true, hasHistory },
-      reason,
-      source: 'Screen'
-    });
   },
 
-  saveAttribute: (attribute, reason) => {
+  saveEntity: (entityName, entity, reason) => {
     const state = get();
-    const existing = state.attributes.find(a => a.id === attribute.id);
-    const user = state.currentUser;
+    const list = state[entityName] as any[];
+    const existingIdx = list.findIndex(e => e.id === entity.id);
+    const isNew = existingIdx < 0;
+    const before = !isNew ? list[existingIdx] : undefined;
+    let entityToSave: any = { ...entity, id: entity.id || generateId() };
 
-    if (existing) {
-      set({
-        attributes: state.attributes.map(a => a.id === attribute.id ? attribute : a)
-      });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Attribute',
-        objectReference: attribute.code,
-        action: 'EDITED',
-        beforeValues: existing,
-        afterValues: attribute,
-        reason: reason || 'Attribute updated',
-        source: 'Screen'
-      });
-    } else {
-      const newAttr = { ...attribute, id: attribute.id || `attr-${Date.now()}` };
-      set({ attributes: [...state.attributes, newAttr] });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Attribute',
-        objectReference: attribute.code,
-        action: 'CREATED',
-        beforeValues: null,
-        afterValues: newAttr,
-        reason: reason || 'New attribute created',
-        source: 'Screen'
-      });
-    }
-  },
-
-  trashAttribute: (id, reason) => {
-    const state = get();
-    const attr = state.attributes.find(a => a.id === id);
-    if (!attr) return;
-
-    // Check if attribute is linked to item groups or past issuances
-    const isLinkedToGroup = state.itemGroups.some(g => g.assignedAttributeIds.includes(id));
-    const hasHistory = isLinkedToGroup || state.issuances.some(i => i.variantKey && i.variantKey.includes(attr.code));
-
-    const trashEntry: TrashItem = {
-      id: `trash-${Date.now()}`,
-      entityType: 'Attribute',
-      originalId: attr.id,
-      code: attr.code,
-      nameEn: attr.nameEn,
-      nameAr: attr.nameAr,
-      deletedBy: state.currentUser.name,
-      deletedAt: new Date().toISOString(),
-      reason,
-      hasHistory,
-      daysInTrash: 0,
-      data: attr
-    };
-
-    // Unlink from active item groups while preserving past issuance data
-    const updatedGroups = state.itemGroups.map(g => ({
-      ...g,
-      assignedAttributeIds: g.assignedAttributeIds.filter(aId => aId !== id)
-    }));
-
-    set({
-      attributes: state.attributes.filter(a => a.id !== id),
-      itemGroups: updatedGroups,
-      trashItems: [trashEntry, ...state.trashItems]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Attribute',
-      objectReference: attr.code,
-      action: 'TRASHED',
-      beforeValues: attr,
-      afterValues: { trashed: true, unlinkedFromGroups: isLinkedToGroup },
-      reason,
-      source: 'Screen'
-    });
-  },
-
-  saveItemGroup: (group, reason) => {
-    const state = get();
-    const existing = state.itemGroups.find(g => g.id === group.id);
-    const user = state.currentUser;
-
-    if (existing) {
-      set({
-        itemGroups: state.itemGroups.map(g => g.id === group.id ? group : g)
-      });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'ItemGroup',
-        objectReference: group.code,
-        action: 'EDITED',
-        beforeValues: existing,
-        afterValues: group,
-        reason: reason || 'Item group updated',
-        source: 'Screen'
-      });
-    } else {
-      const newGrp = { ...group, id: group.id || `grp-${Date.now()}` };
-      set({ itemGroups: [...state.itemGroups, newGrp] });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'ItemGroup',
-        objectReference: group.code,
-        action: 'CREATED',
-        beforeValues: null,
-        afterValues: newGrp,
-        reason: reason || 'New item group created',
-        source: 'Screen'
-      });
-    }
-  },
-
-  trashItemGroup: (id, reason) => {
-    const state = get();
-    const grp = state.itemGroups.find(g => g.id === id);
-    if (!grp) return;
-
-    const hasHistory = state.ppeItems.some(p => p.itemGroupId === id);
-
-    const trashEntry: TrashItem = {
-      id: `trash-${Date.now()}`,
-      entityType: 'ItemGroup',
-      originalId: grp.id,
-      code: grp.code,
-      nameEn: grp.nameEn,
-      nameAr: grp.nameAr,
-      deletedBy: state.currentUser.name,
-      deletedAt: new Date().toISOString(),
-      reason,
-      hasHistory,
-      daysInTrash: 0,
-      data: grp
-    };
-
-    set({
-      itemGroups: state.itemGroups.filter(g => g.id !== id),
-      trashItems: [trashEntry, ...state.trashItems]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'ItemGroup',
-      objectReference: grp.code,
-      action: 'TRASHED',
-      beforeValues: grp,
-      afterValues: { trashed: true, hasHistory },
-      reason,
-      source: 'Screen'
-    });
-  },
-
-  saveLocation: (location, reason) => {
-    const state = get();
-    const existing = state.locations.find(l => l.id === location.id);
-    const user = state.currentUser;
-
-    if (existing) {
-      set({
-        locations: state.locations.map(l => l.id === location.id ? location : l)
-      });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Location',
-        objectReference: location.code,
-        action: 'EDITED',
-        beforeValues: existing,
-        afterValues: location,
-        reason: reason || 'Location modified',
-        source: 'Screen'
-      });
-    } else {
-      const newLoc = { ...location, id: location.id || `loc-${Date.now()}` };
-      set({ locations: [...state.locations, newLoc] });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Location',
-        objectReference: location.code,
-        action: 'CREATED',
-        beforeValues: null,
-        afterValues: newLoc,
-        reason: reason || 'New location created',
-        source: 'Screen'
-      });
-    }
-  },
-
-  trashLocation: (id, reason) => {
-    const state = get();
-    const loc = state.locations.find(l => l.id === id);
-    if (!loc) return;
-
-    const hasHistory = state.batches.some(b => b.locationId === id) ||
-                       state.issuances.some(i => i.locationId === id) ||
-                       state.visitorLoans.some(v => v.fromLocationId === id);
-
-    const trashEntry: TrashItem = {
-      id: `trash-${Date.now()}`,
-      entityType: 'Location',
-      originalId: loc.id,
-      code: loc.code,
-      nameEn: loc.nameEn,
-      nameAr: loc.nameAr,
-      deletedBy: state.currentUser.name,
-      deletedAt: new Date().toISOString(),
-      reason,
-      hasHistory,
-      daysInTrash: 0,
-      data: loc
-    };
-
-    set({
-      locations: state.locations.filter(l => l.id !== id),
-      trashItems: [trashEntry, ...state.trashItems]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Location',
-      objectReference: loc.code,
-      action: 'TRASHED',
-      beforeValues: loc,
-      afterValues: { trashed: true, hasHistory },
-      reason,
-      source: 'Screen'
-    });
-  },
-
-  saveKit: (kit, reason) => {
-    const state = get();
-    const existing = state.kits.find(k => k.id === kit.id);
-    const user = state.currentUser;
-
-    if (existing) {
-      set({
-        kits: state.kits.map(k => k.id === kit.id ? kit : k)
-      });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Kit',
-        objectReference: kit.nameEn,
-        action: 'EDITED',
-        beforeValues: existing,
-        afterValues: kit,
-        reason: reason || 'Job kit updated',
-        source: 'Screen'
-      });
-    } else {
-      const newKit = { ...kit, id: kit.id || `kit-${Date.now()}` };
-      set({ kits: [...state.kits, newKit] });
-      state.writeAuditLog({
-        user: user.name,
-        role: user.role,
-        objectType: 'Kit',
-        objectReference: kit.nameEn,
-        action: 'CREATED',
-        beforeValues: null,
-        afterValues: newKit,
-        reason: reason || 'New job kit created',
-        source: 'Screen'
-      });
-    }
-  },
-
-  trashKit: (id, reason) => {
-    const state = get();
-    const kit = state.kits.find(k => k.id === id);
-    if (!kit) return;
-
-    const hasHistory = state.issuances.some(i => i.kitId === id);
-
-    const trashEntry: TrashItem = {
-      id: `trash-${Date.now()}`,
-      entityType: 'Kit',
-      originalId: kit.id,
-      code: kit.nameEn,
-      nameEn: kit.nameEn,
-      nameAr: kit.nameAr,
-      deletedBy: state.currentUser.name,
-      deletedAt: new Date().toISOString(),
-      reason,
-      hasHistory,
-      daysInTrash: 0,
-      data: kit
-    };
-
-    set({
-      kits: state.kits.filter(k => k.id !== id),
-      trashItems: [trashEntry, ...state.trashItems]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Kit',
-      objectReference: kit.nameEn,
-      action: 'TRASHED',
-      beforeValues: kit,
-      afterValues: { trashed: true, hasHistory },
-      reason,
-      source: 'Screen'
-    });
-  },
-
-  restoreTrashItem: (trashId, newCode) => {
-    const state = get();
-    const item = state.trashItems.find(t => t.id === trashId);
-    if (!item) return { success: false, error: 'Trash item not found.' };
-
-    const effectiveCode = newCode || item.code;
-
-    // 1. Parent Checks
-    if (item.entityType === 'Item') {
-      const ppeData = item.data as PPEItem;
-      const groupInTrash = state.trashItems.some(t => t.entityType === 'ItemGroup' && t.originalId === ppeData.itemGroupId);
-      if (groupInTrash) {
-        return { success: false, error: 'Restore the parent Item Group first.' };
+    // Epic 11: Units of Measure (PPE-051, PPE-052)
+    if (entityName === 'units') {
+      const u = entityToSave as UnitOfMeasure;
+      const now = new Date().toISOString();
+      const code = String(u.code ?? '').trim();
+      if (isNew) {
+        if (!code) return { success: false, message: 'Code is required.' };
+        if (!UNIT_CODE_PATTERN.test(code)) return { success: false, message: 'Code must be one word (letters, digits, dash or underscore).' };
+        // Trashed units still count for uniqueness; upper and lower case count as the same.
+        if (state.units.some(x => x.code.toUpperCase() === code.toUpperCase())) {
+          return { success: false, message: `Code ${code.toUpperCase()} already exists (including units in the Trash Bin).` };
+        }
+      } else if (code.toUpperCase() !== String(before.code).toUpperCase()) {
+        return { success: false, message: 'Code cannot change after saving.' };
       }
-      // Duplicate Code Check
-      if (state.ppeItems.some(p => p.itemCode.toLowerCase() === effectiveCode.toLowerCase())) {
-        return { success: false, error: `Item Code "${effectiveCode}" is already in use by an active item. Provide a new unique code.` };
+      if (!String(u.name ?? '').trim()) return { success: false, message: 'Name is required.' };
+      if (!String(u.symbol ?? '').trim()) return { success: false, message: 'Symbol is required.' };
+      if (!isNew && before.active && u.active === false) {
+        const usage = state.unitUsage(u.id);
+        const total = usage.itemCount + usage.trashedItemCount;
+        if (total > 0) return { success: false, message: `Cannot deactivate: ${total} item(s) use this unit (including items in the Trash Bin). There is no override.` };
       }
-      const restored = { ...ppeData, itemCode: effectiveCode, active: true };
-      set({
-        ppeItems: [...state.ppeItems, restored],
-        trashItems: state.trashItems.filter(t => t.id !== trashId)
-      });
-    } else if (item.entityType === 'Attribute') {
-      if (state.attributes.some(a => a.code.toLowerCase() === effectiveCode.toLowerCase())) {
-        return { success: false, error: `Attribute Code "${effectiveCode}" is already in use. Provide a new code.` };
-      }
-      const restored = { ...(item.data as Attribute), code: effectiveCode, active: true };
-      set({
-        attributes: [...state.attributes, restored],
-        trashItems: state.trashItems.filter(t => t.id !== trashId)
-      });
-    } else if (item.entityType === 'ItemGroup') {
-      const grpData = item.data as ItemGroup;
-      // Check if any assigned attribute is in trash
-      const hasAttrInTrash = grpData.assignedAttributeIds.some(aId => state.trashItems.some(t => t.entityType === 'Attribute' && t.originalId === aId));
-      if (hasAttrInTrash) {
-        return { success: false, error: 'Restore the assigned Attributes first.' };
-      }
-      if (state.itemGroups.some(g => g.code.toLowerCase() === effectiveCode.toLowerCase())) {
-        return { success: false, error: `Item Group Code "${effectiveCode}" is already in use. Provide a new code.` };
-      }
-      const restored = { ...grpData, code: effectiveCode, active: true };
-      set({
-        itemGroups: [...state.itemGroups, restored],
-        trashItems: state.trashItems.filter(t => t.id !== trashId)
-      });
-    } else if (item.entityType === 'Location') {
-      if (state.locations.some(l => l.code.toLowerCase() === effectiveCode.toLowerCase())) {
-        return { success: false, error: `Location Code "${effectiveCode}" is already in use. Provide a new code.` };
-      }
-      const restored = { ...(item.data as Location), code: effectiveCode, active: true };
-      set({
-        locations: [...state.locations, restored],
-        trashItems: state.trashItems.filter(t => t.id !== trashId)
-      });
-    } else if (item.entityType === 'Kit') {
-      const kitData = item.data as Kit;
-      const jobPos = state.jobPositions.find(j => j.id === kitData.jobPositionId);
-      if (!jobPos || !jobPos.active) {
-        return { success: false, error: 'Restore or assign a valid Job Position first.' };
-      }
-      if (state.kits.some(k => k.nameEn.toLowerCase() === effectiveCode.toLowerCase())) {
-        return { success: false, error: `Kit Name "${effectiveCode}" is already taken. Provide a new name.` };
-      }
-      const restored = { ...kitData, nameEn: effectiveCode, active: true };
-      set({
-        kits: [...state.kits, restored],
-        trashItems: state.trashItems.filter(t => t.id !== trashId)
-      });
+      entityToSave = {
+        ...u,
+        code: isNew ? code.toUpperCase() : before.code,
+        name: u.name.trim(),
+        symbol: u.symbol.trim(),
+        active: u.active !== false,
+        deletedAt: isNew ? null : before.deletedAt,
+        createdAt: isNew ? now : before.createdAt,
+        createdBy: isNew ? state.currentUser.id : before.createdBy,
+        updatedAt: isNew ? undefined : now,
+        updatedBy: isNew ? undefined : state.currentUser.id,
+      };
     }
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: item.entityType,
-      objectReference: effectiveCode,
-      action: 'RESTORED',
-      beforeValues: { trashed: true },
-      afterValues: { code: effectiveCode, active: true },
-      reason: newCode ? `Restored from trash with remapped code "${effectiveCode}"` : 'Restored from trash',
-      source: 'Screen'
+    // PPE-001 / PPE-002: unit reference and first-transaction locks
+    if (entityName === 'ppeItems') {
+      const item = entityToSave as PPEItem;
+      const unit = state.units.find(x => x.id === item.unitId);
+      if (!unit || unit.deletedAt) return { success: false, message: 'Unit of Measure is required.' };
+      if (!unit.active && (isNew || before.unitId !== item.unitId)) {
+        return { success: false, message: `Unit ${unit.code} is inactive. Pick an active unit.` };
+      }
+      entityToSave = { ...item, serialTracked: !!item.serialTracked };
+      if (!isNew && state.itemHasTransactions(item.id)) {
+        if (item.itemCode !== before.itemCode) {
+          return { success: false, message: 'Item Code is locked after the item\'s first transaction.' };
+        }
+        if (!!item.serialTracked !== !!before.serialTracked) {
+          return { success: false, message: 'Serial Number tracked is locked after the item\'s first transaction.' };
+        }
+      }
+    }
+
+    set((s) => {
+      if (isNew) {
+        return { [entityName]: [...(s[entityName] as any[]), entityToSave] } as Partial<AppState>;
+      } else {
+        const newList = [...(s[entityName] as any[])];
+        newList[existingIdx] = entityToSave;
+        return { [entityName]: newList } as Partial<AppState>;
+      }
+    });
+
+    get().recordAudit({
+      action: isNew ? 'CREATE' : 'UPDATE',
+      objectType: String(entityName),
+      objectReference: entityToSave.code || entityToSave.itemCode || entityToSave.id,
+      before,
+      after: entityToSave,
+      reason
+    });
+    return { success: true };
+  },
+
+  softDeleteEntity: (entityName, id, overrideReason) => {
+    const state = get();
+    const currentUser = state.currentUser;
+
+    // PPE-055: a unit used by any item (trashed included) cannot be trashed. No override.
+    if (entityName === 'units') {
+      const usage = state.unitUsage(id);
+      const total = usage.itemCount + usage.trashedItemCount;
+      if (total > 0) {
+        return { success: false, message: `Cannot move to Trash: ${total} item(s) use this unit (including items in the Trash Bin). There is no override.` };
+      }
+    }
+
+    if (['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits'].includes(entityName as string)) {
+      if (entityName === 'locations') {
+        const loc = state.locations.find(l => l.id === id);
+        const isScrap = loc?.stockCondition === 'Scrap' || loc?.locationType === 'Scrap';
+        const hasStock = state.stockBalances.some(b => b.locationId === id && b.quantityOnHand > 0);
+        const hasOpenLoans = state.issuances.some(i => i.locationId === id && (i.isLoan || !!i.expectedReturnDate) && i.status !== 'returned');
+        const isOnlyLocation = state.ppeItems.some(p => p.active && !p.deletedAt && p.locationIds.length === 1 && p.locationIds[0] === id);
+
+        if ((!isScrap && hasStock) || hasOpenLoans || isOnlyLocation) {
+          const detail = (!isScrap && hasStock)
+            ? 'Location holds stock (hard block with no override, move stock first).'
+            : hasOpenLoans
+            ? 'Location has open loans that must be closed first.'
+            : 'Location is the sole location for active items.';
+          return { success: false, message: `Deletion blocked: ${detail}` };
+        }
+      }
+
+      const inUseCheck = state.checkInUse(entityName as any, id);
+      if (inUseCheck.inUse) {
+        const isAdmin = currentUser.role === 'Admin';
+        if (!isAdmin) {
+          return { success: false, message: `Cannot delete: in-use protection triggered. ${inUseCheck.reasons.join(' ')}` };
+        }
+        if (!overrideReason || overrideReason.trim().length < OVERRIDE_REASON_MIN) {
+          return { success: false, message: `Admin override requires a reason of at least ${OVERRIDE_REASON_MIN} characters. In-use reasons: ${inUseCheck.reasons.join(' ')}` };
+        }
+      }
+    }
+
+    const list = state[entityName] as any[];
+    const item = list.find(e => e.id === id);
+    if (!item) return { success: false, message: 'Entity not found.' };
+
+    const before = { ...item };
+    const updated = { ...item, active: false, deletedAt: new Date().toISOString() };
+
+    set((s) => ({
+      [entityName]: (s[entityName] as any[]).map(e => e.id === id ? updated : e)
+    } as Partial<AppState>));
+
+    get().recordAudit({
+      action: overrideReason ? 'DELETE_WITH_OVERRIDE' : 'SOFT_DELETE',
+      objectType: String(entityName),
+      objectReference: id,
+      before,
+      after: updated,
+      reason: overrideReason || 'Moved to Trash Bin'
     });
 
     return { success: true };
   },
 
-  postOpeningBalance: (locationId, lines) => {
+  toggleEntityActive: (entityName, id, active, overrideReason) => {
     const state = get();
-    const loc = state.locations.find(l => l.id === locationId);
-    if (!loc) return;
+    const currentUser = state.currentUser;
 
-    const refNumber = `ADJ-OB-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
-    const newBatches: Batch[] = lines.map(line => ({
-      id: `bat-ob-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    // PPE-052 / PPE-053: a unit in use (trashed items included) cannot be deactivated. No override.
+    if (!active && entityName === 'units') {
+      const usage = state.unitUsage(id);
+      const total = usage.itemCount + usage.trashedItemCount;
+      if (total > 0) {
+        return { success: false, message: `Cannot deactivate: ${total} item(s) use this unit (including items in the Trash Bin). There is no override.` };
+      }
+    }
+
+    if (!active && ['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits'].includes(entityName as string)) {
+      if (entityName === 'locations') {
+        const loc = state.locations.find(l => l.id === id);
+        const isScrap = loc?.stockCondition === 'Scrap' || loc?.locationType === 'Scrap';
+        const hasStock = state.stockBalances.some(b => b.locationId === id && b.quantityOnHand > 0);
+        const hasOpenLoans = state.issuances.some(i => i.locationId === id && (i.isLoan || !!i.expectedReturnDate) && i.status !== 'returned');
+        const isOnlyLocation = state.ppeItems.some(p => p.active && !p.deletedAt && p.locationIds.length === 1 && p.locationIds[0] === id);
+
+        if ((!isScrap && hasStock) || hasOpenLoans || isOnlyLocation) {
+          const detail = (!isScrap && hasStock)
+            ? 'Location holds stock (hard block with no override, move stock first).'
+            : hasOpenLoans
+            ? 'Location has open loans that must be closed first.'
+            : 'Location is the sole location for active items.';
+          return { success: false, message: `Deactivation blocked: ${detail}` };
+        }
+      }
+
+      const inUseCheck = state.checkInUse(entityName as any, id);
+      if (inUseCheck.inUse) {
+        const isAdmin = currentUser.role === 'Admin';
+        if (!isAdmin) {
+          return { success: false, message: `Cannot deactivate: in-use protection active. ${inUseCheck.reasons.join(' ')}` };
+        }
+        if (!overrideReason || overrideReason.trim().length < OVERRIDE_REASON_MIN) {
+          return { success: false, message: `Admin override requires a reason of at least ${OVERRIDE_REASON_MIN} characters. ${inUseCheck.reasons.join(' ')}` };
+        }
+      }
+    }
+
+    const list = state[entityName] as any[];
+    const item = list.find(e => e.id === id);
+    if (!item) return { success: false, message: 'Entity not found.' };
+
+    const before = { ...item };
+    const updated = { ...item, active };
+
+    set((s) => ({
+      [entityName]: (s[entityName] as any[]).map(e => e.id === id ? updated : e)
+    } as Partial<AppState>));
+
+    get().recordAudit({
+      action: active ? 'ACTIVATE' : (overrideReason ? 'DEACTIVATE_WITH_OVERRIDE' : 'DEACTIVATE'),
+      objectType: String(entityName),
+      objectReference: id,
+      before,
+      after: updated,
+      reason: overrideReason
+    });
+
+    return { success: true };
+  },
+
+  restoreEntity: (entityName, id, newCode) => {
+    const state = get();
+    const list = state[entityName] as any[];
+    const item = list.find(e => e.id === id);
+    if (!item) return { success: false, message: 'Entity not found.' };
+
+    // PPE-048 / PPE-055: the code must not be taken by another record; Admin may give a new code.
+    const codeField = entityName === 'ppeItems' ? 'itemCode' : (entityName === 'kits' ? null : 'code');
+    let restoredCode: string | undefined;
+    if (codeField) {
+      const wanted = String(newCode ?? item[codeField] ?? '').trim();
+      if (!wanted) return { success: false, message: 'A code is required to restore.' };
+      if (entityName === 'units' && !UNIT_CODE_PATTERN.test(wanted)) {
+        return { success: false, message: 'Code must be one word (letters, digits, dash or underscore).' };
+      }
+      // Units: trashed units count for uniqueness. Other types: compare with records outside the Trash Bin.
+      const clash = list.some(e => e.id !== id && (entityName === 'units' || !e.deletedAt) &&
+        String(e[codeField] ?? '').toUpperCase() === wanted.toUpperCase());
+      if (clash) {
+        return { success: false, codeTaken: true, message: `Code ${wanted} is already used by another record. Enter a new code to restore.` };
+      }
+      restoredCode = entityName === 'units' ? wanted.toUpperCase() : wanted;
+    }
+
+    // Dependency validation on restore
+    if (entityName === 'ppeItems') {
+      const parentGroup = state.itemGroups.find(g => g.id === item.itemGroupId);
+      if (parentGroup && (parentGroup.deletedAt || !parentGroup.active)) {
+        return { success: false, message: `Cannot restore item: its Item Group (${parentGroup.name}) is deleted or inactive. Restore the group first.` };
+      }
+    } else if (entityName === 'itemGroups') {
+      const missingAttrs = item.attributeIds.filter((attrId: string) => {
+        const attr = state.attributes.find(a => a.id === attrId);
+        return !attr || attr.deletedAt;
+      });
+      if (missingAttrs.length > 0) {
+        return { success: false, message: 'Cannot restore Item Group: some assigned attributes are deleted.' };
+      }
+    }
+
+    const before = { ...item };
+    // PPE-055: a restored unit comes back Inactive; Admin turns it on.
+    const updated = {
+      ...item,
+      ...(codeField && restoredCode ? { [codeField]: restoredCode } : {}),
+      active: entityName === 'units' ? false : true,
+      deletedAt: null
+    };
+
+    set((s) => ({
+      [entityName]: (s[entityName] as any[]).map(e => e.id === id ? updated : e)
+    } as Partial<AppState>));
+
+    get().recordAudit({
+      action: 'RESTORE',
+      objectType: String(entityName),
+      objectReference: (codeField && updated[codeField]) || id,
+      before,
+      after: updated,
+      reason: restoredCode && codeField && restoredCode !== item[codeField]
+        ? `Restored from Trash Bin with new code ${restoredCode}`
+        : 'Restored from Trash Bin'
+    });
+
+    return { success: true };
+  },
+
+  // Rule G10: Permanent Purge from Trash
+  purgeEntity: (entityName, id) => {
+    const state = get();
+    // Rule G10: Protect records with transaction history
+    let hasHistory = false;
+    if (entityName === 'ppeItems') {
+      // Serial history is never removed, so an item with serials is retained with it (PPE-059).
+      hasHistory = state.itemHasTransactions(id);
+    } else if (entityName === 'units') {
+      // PPE-055: only unused units can be trashed, but re-check before a permanent delete.
+      const usage = state.unitUsage(id);
+      hasHistory = usage.itemCount + usage.trashedItemCount > 0;
+    } else if (entityName === 'locations') {
+      hasHistory = state.stockMovements.some(m => m.locationId === id || m.toLocationId === id) || state.issuances.some(i => i.locationId === id);
+    } else if (entityName === 'kits') {
+      hasHistory = state.issuances.some(i => i.kitId === id);
+    }
+
+    if (hasHistory) {
+      return { success: false, message: 'Cannot permanently delete: record is retained indefinitely because it has historical transactions (G10).' };
+    }
+
+    const list = state[entityName] as any[];
+    const item = list.find(e => e.id === id);
+    if (!item) return { success: false, message: 'Entity not found.' };
+
+    set((s) => ({
+      [entityName]: (s[entityName] as any[]).filter(e => e.id !== id)
+    } as Partial<AppState>));
+
+    get().recordAudit({
+      action: 'PERMANENT_PURGE',
+      objectType: String(entityName),
+      objectReference: item.code || item.itemCode || item.name || id,
+      before: item,
+      reason: 'Permanently purged from Trash Bin'
+    });
+
+    return { success: true };
+  },
+
+  purgeEligibleTrash: () => {
+    const state = get();
+    const retentionDays = state.moduleSettings.trashRetentionDays || 90;
+    const now = new Date().getTime();
+    let purgedCount = 0;
+
+    const types: (keyof AppState)[] = ['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits', 'units'];
+    types.forEach(t => {
+      const list = state[t] as any[];
+      if (Array.isArray(list)) {
+        list.forEach(item => {
+          if (item.deletedAt) {
+            const ageDays = (now - new Date(item.deletedAt).getTime()) / (1000 * 60 * 60 * 24);
+            if (ageDays >= retentionDays) {
+              const res = get().purgeEntity(t, item.id);
+              if (res.success) purgedCount++;
+            }
+          }
+        });
+      }
+    });
+
+    return { purgedCount };
+  },
+
+  saveOpeningBalance: (ob) => {
+    // PPE-057: for a tracked item, quantity equals the serials entered; validate when it leaves Draft.
+    const state0 = get();
+    const lines = ob.lines.map(l => {
+      const item = state0.ppeItems.find(p => p.id === l.ppeItemId);
+      return item?.serialTracked ? { ...l, quantity: (l.serialNumbers || []).length } : l;
+    });
+    ob = { ...ob, lines };
+    if (ob.status !== 'Draft') {
+      const err = validateOpeningBalanceSerials(state0, ob);
+      if (err) return { success: false, message: err };
+    }
+    set((state) => {
+      const idx = state.openingBalances.findIndex(o => o.id === ob.id);
+      if (idx >= 0) {
+        const newObs = [...state.openingBalances];
+        newObs[idx] = ob;
+        return { openingBalances: newObs };
+      }
+      return { openingBalances: [...state.openingBalances, ob] };
+    });
+    get().recordAudit({
+      action: 'SAVE_OPENING_BALANCE',
+      objectType: 'OpeningBalance',
+      objectReference: ob.id,
+      after: ob
+    });
+    return { success: true };
+  },
+
+  approveOpeningBalance: (id, approverId) => {
+    const state = get();
+    const ob = state.openingBalances.find(o => o.id === id);
+    if (!ob || ob.status !== 'Pending Approval') return { success: false, message: 'Opening balance document not found or not pending approval.' };
+
+    const loc = state.locations.find(l => l.id === ob.locationId);
+    if (loc?.openingBalanceClosed) {
+      return { success: false, message: 'Opening balance is closed for this location. Use a stock adjustment (PPE-024).' };
+    }
+    if (loc?.stockCondition === 'Scrap' || loc?.locationType === 'Scrap') {
+      return { success: false, message: 'Scrap location cannot have opening balance. Scrap stock comes only from returns and Stock OUT (PPE-024).' };
+    }
+
+    const ref = ob.reference || `ADJ-OB-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+
+    // PPE-057: register one In Stock unit per serial for tracked lines. All lines or nothing.
+    const serialErr = validateOpeningBalanceSerials(state, ob);
+    if (serialErr) return { success: false, message: serialErr };
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    for (const line of ob.lines) {
+      const item = state.ppeItems.find(p => p.id === line.ppeItemId);
+      if (!item?.serialTracked) continue;
+      const res = registerSerialUnits(serialUnits, serialEvents, {
+        ppeItemId: line.ppeItemId,
+        serials: line.serialNumbers || [],
+        locationId: ob.locationId,
+        batchNumber: line.batchNumber,
+        userId: approverId,
+        reference: ref,
+      }, state.describeSerialLocation);
+      if (!res.ok) return { success: false, message: res.errors[0].message };
+      serialUnits = res.serialUnits;
+      serialEvents = res.serialEvents;
+    }
+
+    const newObs = state.openingBalances.map(o =>
+      o.id === id ? { ...o, reference: ref, status: 'Approved' as const, approvedBy: approverId, approvedAt: new Date().toISOString() } : o
+    );
+
+    // Create batch records
+    const newBatches: Batch[] = ob.lines.map(line => ({
+      id: generateId(),
       batchNumber: line.batchNumber,
       ppeItemId: line.ppeItemId,
-      locationId,
-      variantKey: line.variantKey,
+      locationId: ob.locationId,
       quantity: line.quantity,
       availableQty: line.quantity,
       quarantinedQty: 0,
-      condition: loc.stockCondition === 'Used' ? 'Reused' : 'New',
-      expiryDate: line.expiryDate,
+      isQuarantined: false,
+      expiryDate: line.expiryDate || new Date(new Date().setFullYear(new Date().getFullYear() + 2)).toISOString(),
       costPerUnit: line.costPerUnit,
-      status: 'Active',
+      status: 'Active' as const,
+      openingBalanceId: ob.id,
       createdAt: new Date().toISOString()
     }));
 
-    // Mark location as having held stock
-    const updatedLocations = state.locations.map(l => l.id === locationId ? { ...l, hasHeldStock: true } : l);
-
-    set({
-      batches: [...state.batches, ...newBatches],
-      locations: updatedLocations
+    // Update stock balances
+    let newBalances = [...state.stockBalances];
+    ob.lines.forEach(line => {
+      const balIdx = newBalances.findIndex(b => b.ppeItemId === line.ppeItemId && b.locationId === ob.locationId);
+      if (balIdx >= 0) {
+        newBalances[balIdx] = { 
+          ...newBalances[balIdx], 
+          quantityOnHand: newBalances[balIdx].quantityOnHand + line.quantity 
+        };
+      } else {
+        newBalances.push({ 
+          id: generateId(), 
+          ppeItemId: line.ppeItemId, 
+          locationId: ob.locationId, 
+          quantityOnHand: line.quantity,
+          quarantinedOnHand: 0
+        });
+      }
     });
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Stock',
-      objectReference: refNumber,
-      action: 'OPENING_BALANCE_POSTED',
-      beforeValues: null,
-      afterValues: { locationId, linesCount: lines.length, totalQuantity: lines.reduce((acc, l) => acc + l.quantity, 0) },
-      reason: `Opening balance posted for location ${loc.nameEn}`,
-      source: 'Screen'
+    set({ openingBalances: newObs, batches: [...state.batches, ...newBatches], stockBalances: newBalances, serialUnits, serialEvents });
+
+    get().recordAudit({
+      action: 'APPROVE_OPENING_BALANCE',
+      objectType: 'OpeningBalance',
+      objectReference: ref,
+      performedBy: approverId
+    });
+
+    return { success: true };
+  },
+
+  rejectOpeningBalance: (id, reason) => {
+    set((state) => ({
+      openingBalances: state.openingBalances.map(o => 
+        o.id === id ? { ...o, status: 'Rejected' as const, rejectionReason: reason } : o
+      )
+    }));
+    get().recordAudit({
+      action: 'REJECT_OPENING_BALANCE',
+      objectType: 'OpeningBalance',
+      objectReference: id,
+      reason
     });
   },
 
-  closeOpeningBalanceForLocation: (locationId) => {
-    const state = get();
-    const loc = state.locations.find(l => l.id === locationId);
+  // Close Opening Balance Lock (PPE-024)
+  closeOpeningBalance: (locationId, byId) => {
+    const loc = get().locations.find(l => l.id === locationId);
     if (!loc) return;
 
-    set({
-      locations: state.locations.map(l => l.id === locationId ? { ...l, openingBalanceStatus: 'Closed' } : l)
-    });
+    set((state) => ({
+      locations: state.locations.map(l => l.id === locationId ? { ...l, openingBalanceClosed: true } : l)
+    }));
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
+    get().recordAudit({
+      action: 'CLOSE_OPENING_BALANCE',
       objectType: 'Location',
-      objectReference: loc.code,
-      action: 'OPENING_BALANCE_CLOSED',
-      beforeValues: { openingBalanceStatus: loc.openingBalanceStatus },
-      afterValues: { openingBalanceStatus: 'Closed' },
-      reason: `Opening balance permanently locked for location ${loc.nameEn}`,
-      source: 'Screen'
+      objectReference: locationId,
+      performedBy: byId,
+      reason: 'Opening balance permanently closed for location'
     });
   },
 
-  recordStockIn: (params) => {
+  // Stock Adjustment (PPE-025, PPE-026)
+  adjustStock: (adjustment) => {
     const state = get();
-    const ppe = state.ppeItems.find(p => p.id === params.ppeItemId);
-    const loc = state.locations.find(l => l.id === params.locationId);
-    const ref = `ADJ-IN-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
-
-    const isCategoryIII = ppe?.riskCategory === 'Category III';
-    const isPurchaseReceipt = params.reasonCategory === 'Purchase Receipt';
-    const requiresApproval = isCategoryIII && !isPurchaseReceipt;
-
-    const adjustment: StockAdjustment = {
-      id: `adj-${Date.now()}`,
-      reference: ref,
-      type: 'IN',
-      ppeItemId: params.ppeItemId,
-      locationId: params.locationId,
-      batchNumber: params.batchNumber,
-      variantKey: params.variantKey,
-      quantityDelta: params.quantity,
-      reasonCategory: params.reasonCategory,
-      reasonDetail: params.reasonDetail,
-      manufacturerExpiryDate: params.manufacturerExpiryDate,
-      supplierDeliveryNote: params.supplierDeliveryNote,
-      status: requiresApproval ? 'pending' : 'applied',
-      submittedBy: state.currentUser.name,
-      createdAt: new Date().toISOString()
-    };
-
-    if (requiresApproval) {
-      set({ stockAdjustments: [adjustment, ...state.stockAdjustments] });
-      state.addNotification({
-        type: 'approval_request',
-        title: `HSE Approval Needed: ${ref}`,
-        message: `Stock IN of ${params.quantity} pcs of Category III item "${ppe?.nameEn}" requires HSE Supervisor approval.`,
-        severity: 'warning',
-        linkTo: '/stock/adjustments'
-      });
-      state.writeAuditLog({
-        user: state.currentUser.name,
-        role: state.currentUser.role,
-        objectType: 'StockAdjustment',
-        objectReference: ref,
-        action: 'SUBMITTED_FOR_APPROVAL',
-        beforeValues: null,
-        afterValues: adjustment,
-        reason: params.reasonDetail,
-        source: 'Screen'
-      });
-      return { requiresApproval: true, reference: ref };
+    const loc = state.locations.find(l => l.id === adjustment.locationId);
+    if (adjustment.type === 'IN' && (loc?.stockCondition === 'Scrap' || loc?.locationType === 'Scrap')) {
+      return { success: false, message: 'Scrap stock comes only from returns and Stock OUT (Rule G6).' };
     }
 
-    // Apply immediately
-    const existingBatch = state.batches.find(b => 
-      b.batchNumber === params.batchNumber && 
-      b.ppeItemId === params.ppeItemId && 
-      b.locationId === params.locationId
-    );
+    const status = adjustment.status || 'applied';
+    const isApplied = status === 'applied';
+    const adjId = adjustment.id || generateId();
 
-    let updatedBatches = [...state.batches];
-    if (existingBatch) {
-      updatedBatches = updatedBatches.map(b => b.id === existingBatch.id ? {
-        ...b,
-        quantity: b.quantity + params.quantity,
-        availableQty: b.availableQty + params.quantity,
-        status: 'Active'
-      } : b);
-    } else {
-      updatedBatches.push({
-        id: `bat-${Date.now()}`,
-        batchNumber: params.batchNumber,
-        ppeItemId: params.ppeItemId,
-        locationId: params.locationId,
-        variantKey: params.variantKey,
-        quantity: params.quantity,
-        availableQty: params.quantity,
-        quarantinedQty: 0,
-        condition: loc?.stockCondition === 'Used' ? 'Reused' : 'New',
-        expiryDate: params.manufacturerExpiryDate,
-        manufacturerExpiryDate: params.manufacturerExpiryDate,
-        supplierDeliveryNote: params.supplierDeliveryNote,
-        status: 'Active',
-        createdAt: new Date().toISOString()
-      });
-    }
-
-    const updatedLocations = state.locations.map(l => l.id === params.locationId ? { ...l, hasHeldStock: true } : l);
-
-    set({
-      batches: updatedBatches,
-      locations: updatedLocations,
-      stockAdjustments: [adjustment, ...state.stockAdjustments]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Stock',
-      objectReference: ref,
-      action: 'STOCK_IN_APPLIED',
-      beforeValues: null,
-      afterValues: { batchNumber: params.batchNumber, quantityAdded: params.quantity },
-      reason: params.reasonDetail,
-      source: 'Screen'
-    });
-
-    return { requiresApproval: false, reference: ref };
-  },
-
-  recordStockOut: (params) => {
-    const state = get();
-    const ppe = state.ppeItems.find(p => p.id === params.ppeItemId);
-    const ref = `ADJ-OUT-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
-
-    const isCategoryIII = ppe?.riskCategory === 'Category III';
-    const isQuarantine = params.reasonCategory === 'Quarantine';
-    const requiresApproval = isCategoryIII;
-
-    const adjustment: StockAdjustment = {
-      id: `adj-${Date.now()}`,
-      reference: ref,
-      type: 'OUT',
-      ppeItemId: params.ppeItemId,
-      locationId: params.locationId,
-      batchNumber: params.batchNumber,
-      variantKey: params.variantKey,
-      quantityDelta: -params.quantity,
-      reasonCategory: params.reasonCategory,
-      reasonDetail: params.reasonDetail,
-      quarantineReason: params.quarantineReason,
-      status: requiresApproval ? 'pending' : 'applied',
-      submittedBy: state.currentUser.name,
-      createdAt: new Date().toISOString()
-    };
-
-    // If quarantine, mark batch quarantined immediately (even if approval is pending)
-    let updatedBatches = [...state.batches];
-    if (isQuarantine) {
-      updatedBatches = updatedBatches.map(b => {
-        if (b.batchNumber === params.batchNumber && b.ppeItemId === params.ppeItemId && b.locationId === params.locationId) {
-          const moveQty = Math.min(b.availableQty, params.quantity);
-          return {
-            ...b,
-            availableQty: Math.max(0, b.availableQty - moveQty),
-            quarantinedQty: b.quarantinedQty + moveQty,
-            status: 'Quarantined' as const
-          };
-        }
-        return b;
-      });
-    }
-
-    if (requiresApproval) {
-      set({
-        batches: updatedBatches,
-        stockAdjustments: [adjustment, ...state.stockAdjustments]
-      });
-      state.addNotification({
-        type: 'approval_request',
-        title: `HSE Approval Needed: ${ref}`,
-        message: `Stock OUT of ${params.quantity} pcs of Category III item "${ppe?.nameEn}" requires HSE Supervisor approval.`,
-        severity: 'warning',
-        linkTo: '/stock/adjustments'
-      });
-      state.writeAuditLog({
-        user: state.currentUser.name,
-        role: state.currentUser.role,
-        objectType: 'StockAdjustment',
-        objectReference: ref,
-        action: isQuarantine ? 'QUARANTINE_PENDING_APPROVAL' : 'STOCK_OUT_PENDING_APPROVAL',
-        beforeValues: null,
-        afterValues: adjustment,
-        reason: params.quarantineReason || params.reasonDetail,
-        source: 'Screen'
-      });
-      return { requiresApproval: true, reference: ref };
-    }
-
-    // Apply deduction immediately if not quarantine
-    if (!isQuarantine) {
-      updatedBatches = updatedBatches.map(b => {
-        if (b.batchNumber === params.batchNumber && b.ppeItemId === params.ppeItemId && b.locationId === params.locationId) {
-          const newQty = Math.max(0, b.quantity - params.quantity);
-          const newAvail = Math.max(0, b.availableQty - params.quantity);
-          return {
-            ...b,
-            quantity: newQty,
-            availableQty: newAvail,
-            status: newQty === 0 ? 'Depleted' as const : b.status
-          };
-        }
-        return b;
-      });
-    }
-
-    set({
-      batches: updatedBatches,
-      stockAdjustments: [adjustment, ...state.stockAdjustments]
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Stock',
-      objectReference: ref,
-      action: isQuarantine ? 'BATCH_QUARANTINED' : 'STOCK_OUT_APPLIED',
-      beforeValues: null,
-      afterValues: { batchNumber: params.batchNumber, quantityDeducted: params.quantity },
-      reason: params.quarantineReason || params.reasonDetail,
-      source: 'Screen'
-    });
-
-    return { requiresApproval: false, reference: ref };
-  },
-
-  releaseQuarantine: (batchId, releaseReason) => {
-    const state = get();
-    const batch = state.batches.find(b => b.id === batchId);
-    if (!batch) return;
-
-    const releasedQty = batch.quarantinedQty;
-    const updatedBatches = state.batches.map(b => {
-      if (b.id === batchId) {
-        return {
-          ...b,
-          availableQty: b.availableQty + releasedQty,
-          quarantinedQty: 0,
-          status: 'Active' as const
-        };
+    // PPE-057 / PPE-058: serial-tracked items move by serial, quantity = serial count.
+    const trackedItem = state.ppeItems.find(p => p.id === adjustment.ppeItemId);
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    if (trackedItem?.serialTracked) {
+      if (isQuarantineReason(adjustment.reasonCategory)) {
+        return { success: false, message: 'Quarantine is not available for a serial-tracked item. Use a Stock OUT reason that names what happened to each unit.' };
       }
-      return b;
-    });
+      if (adjustment.type === 'IN') {
+        const serials: string[] = adjustment.serialNumbers || [];
+        if (serials.length === 0) return { success: false, message: `${trackedItem.itemCode} is serial tracked: enter one serial number per unit.` };
+        const errors = state.validateNewSerials(trackedItem.id, serials);
+        if (errors.length > 0) return { success: false, message: errors[0].message };
+        adjustment = { ...adjustment, quantityDelta: serials.length };
+        if (isApplied) {
+          const res = registerSerialUnits(serialUnits, serialEvents, {
+            ppeItemId: trackedItem.id, serials, locationId: adjustment.locationId,
+            batchNumber: adjustment.batchNumber, userId: adjustment.submittedBy, reference: adjustment.reference,
+          }, state.describeSerialLocation);
+          if (!res.ok) return { success: false, message: res.errors[0].message };
+          serialUnits = res.serialUnits;
+          serialEvents = res.serialEvents;
+        }
+      } else {
+        const ids: string[] = adjustment.serialIds || [];
+        const res = moveSerialUnits(serialUnits, serialEvents, stockOutMove(adjustment, trackedItem.id, ids), state.describeSerialLocation);
+        if (!res.ok) return { success: false, message: res.message };
+        adjustment = { ...adjustment, quantityDelta: -ids.length };
+        if (isApplied) {
+          serialUnits = res.serialUnits;
+          serialEvents = res.serialEvents;
+        }
+      }
+    }
 
-    set({ batches: updatedBatches });
+    const adjWithId: StockAdjustment = { ...adjustment, status, id: adjId, createdAt: new Date().toISOString() };
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Stock',
-      objectReference: batch.batchNumber,
-      action: 'RELEASE_QUARANTINE',
-      beforeValues: { quarantinedQty: batch.quarantinedQty, status: batch.status },
-      afterValues: { quarantinedQty: 0, availableQty: batch.availableQty + releasedQty, status: 'Active' },
-      reason: releaseReason,
-      source: 'Screen'
-    });
-  },
+    let newBalances = [...state.stockBalances];
+    let newBatches = [...state.batches];
+    let newMovements = [...state.stockMovements];
+    let newScraps = [...state.scrapEntries];
 
-  reviewAdjustment: (adjustmentId, action, reviewerId) => {
-    const state = get();
-    const adj = state.stockAdjustments.find(a => a.id === adjustmentId);
-    if (!adj || adj.status !== 'pending') return { success: false, error: 'Adjustment not found or already reviewed.' };
-
-    const reviewer = state.employees.find(e => e.id === reviewerId);
-    const updatedStatus = action === 'approved' ? 'approved' : 'rejected';
-
-    if (action === 'approved') {
-      const batch = state.batches.find(b => b.batchNumber === adj.batchNumber && b.ppeItemId === adj.ppeItemId && b.locationId === adj.locationId);
-
-      if (adj.type === 'IN') {
-        let updatedBatches = [...state.batches];
-        if (batch) {
-          updatedBatches = updatedBatches.map(b => b.id === batch.id ? {
-            ...b,
-            quantity: b.quantity + adj.quantityDelta,
-            availableQty: b.availableQty + adj.quantityDelta,
-            status: 'Active'
-          } : b);
+    if (isApplied) {
+      if (adjustment.reasonCategory === 'Quarantined') {
+        // Rule G9: Quarantine moves available stock to quarantined stock without reducing total On Hand
+        const qQty = Math.abs(adjustment.quantityDelta);
+        const balIdx = newBalances.findIndex(b => b.ppeItemId === adjustment.ppeItemId && b.locationId === adjustment.locationId);
+        if (balIdx >= 0) {
+          newBalances[balIdx] = { 
+            ...newBalances[balIdx], 
+            quarantinedOnHand: (newBalances[balIdx].quarantinedOnHand || 0) + qQty 
+          };
         } else {
-          updatedBatches.push({
-            id: `bat-${Date.now()}`,
-            batchNumber: adj.batchNumber,
-            ppeItemId: adj.ppeItemId,
-            locationId: adj.locationId,
-            variantKey: adj.variantKey,
-            quantity: adj.quantityDelta,
-            availableQty: adj.quantityDelta,
+          newBalances.push({
+            id: generateId(),
+            ppeItemId: adjustment.ppeItemId,
+            locationId: adjustment.locationId,
+            quantityOnHand: qQty,
+            quarantinedOnHand: qQty
+          });
+        }
+
+        const batchIdx = newBatches.findIndex(b => b.batchNumber === adjustment.batchNumber && b.ppeItemId === adjustment.ppeItemId && b.locationId === adjustment.locationId);
+        if (batchIdx >= 0) {
+          const curBatch = newBatches[batchIdx];
+          newBatches[batchIdx] = {
+            ...curBatch,
+            availableQty: Math.max(0, curBatch.availableQty - qQty),
+            quarantinedQty: (curBatch.quarantinedQty || 0) + qQty,
+            isQuarantined: true,
+            quarantineReason: adjustment.reason
+          };
+        }
+      } else {
+        // Standard Stock IN / OUT
+        const balIdx = newBalances.findIndex(b => b.ppeItemId === adjustment.ppeItemId && b.locationId === adjustment.locationId);
+        if (balIdx >= 0) {
+          newBalances[balIdx] = { 
+            ...newBalances[balIdx], 
+            quantityOnHand: Math.max(0, newBalances[balIdx].quantityOnHand + adjustment.quantityDelta) 
+          };
+        } else if (adjustment.quantityDelta > 0) {
+          newBalances.push({ 
+            id: generateId(), 
+            ppeItemId: adjustment.ppeItemId, 
+            locationId: adjustment.locationId, 
+            quantityOnHand: adjustment.quantityDelta,
+            quarantinedOnHand: 0
+          });
+        }
+
+        // If Damaged or Written Off routed to a Scrap location (PPE-026)
+        if (adjustment.destinationLocationId && adjustment.quantityDelta < 0) {
+          const scrapQty = Math.abs(adjustment.quantityDelta);
+          const destLocIdx = newBalances.findIndex(b => b.ppeItemId === adjustment.ppeItemId && b.locationId === adjustment.destinationLocationId);
+          if (destLocIdx >= 0) {
+            newBalances[destLocIdx] = {
+              ...newBalances[destLocIdx],
+              quantityOnHand: newBalances[destLocIdx].quantityOnHand + scrapQty
+            };
+          } else {
+            newBalances.push({
+              id: generateId(),
+              ppeItemId: adjustment.ppeItemId,
+              locationId: adjustment.destinationLocationId,
+              quantityOnHand: scrapQty,
+              quarantinedOnHand: 0
+            });
+          }
+
+          newScraps.push({
+            id: generateId(),
+            ppeItemId: adjustment.ppeItemId,
+            locationId: adjustment.destinationLocationId,
+            batchNumber: adjustment.batchNumber,
+            quantity: scrapQty,
+            reason: `Scrapped via Stock OUT (${adjustment.reasonCategory}): ${adjustment.reason}`,
+            relatedReferenceId: adjWithId.reference,
+            reversed: false,
+            scrappedBy: adjustment.submittedBy,
+            createdAt: new Date().toISOString()
+          });
+        }
+
+        // Batch update
+        const batchIdx = newBatches.findIndex(b => b.batchNumber === adjustment.batchNumber && b.ppeItemId === adjustment.ppeItemId && b.locationId === adjustment.locationId);
+        if (batchIdx >= 0) {
+          const updatedAvail = Math.max(0, newBatches[batchIdx].availableQty + adjustment.quantityDelta);
+          newBatches[batchIdx] = { 
+            ...newBatches[batchIdx], 
+            quantity: newBatches[batchIdx].quantity + (adjustment.quantityDelta > 0 ? adjustment.quantityDelta : 0),
+            availableQty: updatedAvail,
+            status: updatedAvail <= 0 ? 'Depleted' : 'Active'
+          };
+        } else if (adjustment.quantityDelta > 0) {
+          newBatches.push({
+            id: generateId(),
+            batchNumber: adjustment.batchNumber,
+            ppeItemId: adjustment.ppeItemId,
+            locationId: adjustment.locationId,
+            quantity: adjustment.quantityDelta,
+            availableQty: adjustment.quantityDelta,
             quarantinedQty: 0,
-            condition: 'New',
+            isQuarantined: false,
+            expiryDate: adjustment.manufacturerExpiryDate || new Date(new Date().setFullYear(new Date().getFullYear() + 2)).toISOString(),
             status: 'Active',
             createdAt: new Date().toISOString()
           });
         }
-        set({ batches: updatedBatches });
-      } else if (adj.type === 'OUT') {
-        if (!batch || batch.availableQty < Math.abs(adj.quantityDelta)) {
-          return { success: false, error: `Approved quantity (${Math.abs(adj.quantityDelta)}) is no longer available in batch ${adj.batchNumber}.` };
-        }
-        const updatedBatches = state.batches.map(b => b.id === batch.id ? {
-          ...b,
-          quantity: Math.max(0, b.quantity - Math.abs(adj.quantityDelta)),
-          availableQty: Math.max(0, b.availableQty - Math.abs(adj.quantityDelta))
-        } : b);
-        set({ batches: updatedBatches });
       }
+
+      newMovements.push({
+        id: generateId(),
+        type: 'adjustment',
+        ppeItemId: adjustment.ppeItemId,
+        locationId: adjustment.locationId,
+        quantity: adjustment.quantityDelta,
+        reason: `${adjustment.reasonCategory}: ${adjustment.reason}`,
+        reference: adjustment.reference,
+        createdBy: adjustment.submittedBy,
+        createdAt: new Date().toISOString()
+      });
+    }
+
+    set((state) => ({
+      stockAdjustments: [adjWithId, ...state.stockAdjustments],
+      stockBalances: isApplied ? newBalances : state.stockBalances,
+      batches: isApplied ? newBatches : state.batches,
+      stockMovements: isApplied ? newMovements : state.stockMovements,
+      scrapEntries: isApplied ? newScraps : state.scrapEntries,
+      serialUnits,
+      serialEvents
+    }));
+
+    get().recordAudit({
+      action: isApplied ? 'STOCK_ADJUSTMENT_APPLIED' : 'STOCK_ADJUSTMENT_SUBMITTED',
+      objectType: 'StockAdjustment',
+      objectReference: adjWithId.reference,
+      after: adjWithId,
+      performedBy: adjustment.submittedBy,
+      reason: adjustment.reason
+    });
+
+    return { success: true, id: adjId };
+  },
+
+  reviewAdjustment: (id, status, reviewerId) => {
+    const state = get();
+    const adj = state.stockAdjustments.find(a => a.id === id);
+    if (!adj) return { success: false, message: 'Adjustment not found.' };
+    if (adj.status !== 'pending') return { success: false, message: 'Adjustment is not pending approval.' };
+
+    let newBalances = [...state.stockBalances];
+    let newBatches = [...state.batches];
+    let newMovements = [...state.stockMovements];
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+
+    // PPE-057 / PPE-058: serials of a Risk Category III adjustment are registered or moved on approval.
+    const item = state.ppeItems.find(p => p.id === adj.ppeItemId);
+    if (status === 'approved' && item?.serialTracked) {
+      if (adj.type === 'IN') {
+        const res = registerSerialUnits(serialUnits, serialEvents, {
+          ppeItemId: item.id, serials: adj.serialNumbers || [], locationId: adj.locationId,
+          batchNumber: adj.batchNumber, userId: reviewerId, reference: adj.reference,
+        }, state.describeSerialLocation);
+        if (!res.ok) return { success: false, message: res.errors[0].message };
+        serialUnits = res.serialUnits;
+        serialEvents = res.serialEvents;
+      } else {
+        const res = moveSerialUnits(serialUnits, serialEvents, { ...stockOutMove(adj, item.id, adj.serialIds || []), userId: reviewerId }, state.describeSerialLocation);
+        if (!res.ok) return { success: false, message: res.message };
+        serialUnits = res.serialUnits;
+        serialEvents = res.serialEvents;
+      }
+    }
+
+    if (status === 'approved') {
+      // Stock OUT routed to a Scrap location lands there on approval, as it does when posted directly.
+      if (adj.destinationLocationId && adj.quantityDelta < 0) {
+        newBalances = bumpBalance(newBalances, adj.ppeItemId, adj.destinationLocationId, Math.abs(adj.quantityDelta));
+      }
+      const balIdx = newBalances.findIndex(b => b.ppeItemId === adj.ppeItemId && b.locationId === adj.locationId);
+      if (balIdx >= 0) {
+        newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: Math.max(0, newBalances[balIdx].quantityOnHand + adj.quantityDelta) };
+      } else if (adj.quantityDelta > 0) {
+        newBalances.push({ id: generateId(), ppeItemId: adj.ppeItemId, locationId: adj.locationId, quantityOnHand: adj.quantityDelta, quarantinedOnHand: 0 });
+      }
+
+      const batchIdx = newBatches.findIndex(b => b.batchNumber === adj.batchNumber && b.ppeItemId === adj.ppeItemId && b.locationId === adj.locationId);
+      if (batchIdx >= 0) {
+        const updatedAvail = Math.max(0, newBatches[batchIdx].availableQty + adj.quantityDelta);
+        newBatches[batchIdx] = { 
+          ...newBatches[batchIdx], 
+          quantity: newBatches[batchIdx].quantity + (adj.quantityDelta > 0 ? adj.quantityDelta : 0),
+          availableQty: updatedAvail,
+          status: updatedAvail <= 0 ? 'Depleted' : 'Active'
+        };
+      } else if (adj.quantityDelta > 0) {
+        newBatches.push({
+          id: generateId(),
+          batchNumber: adj.batchNumber || `B-${Date.now()}`,
+          ppeItemId: adj.ppeItemId,
+          locationId: adj.locationId,
+          quantity: adj.quantityDelta,
+          availableQty: adj.quantityDelta,
+          quarantinedQty: 0,
+          isQuarantined: false,
+          expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 2)).toISOString(),
+          status: 'Active',
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      newMovements.push({
+        id: generateId(),
+        type: 'adjustment',
+        ppeItemId: adj.ppeItemId,
+        locationId: adj.locationId,
+        quantity: adj.quantityDelta,
+        reason: `Approved: ${adj.reason}`,
+        reference: adj.reference,
+        approvedBy: reviewerId,
+        createdBy: adj.submittedBy,
+        createdAt: new Date().toISOString()
+      });
     }
 
     set({
-      stockAdjustments: state.stockAdjustments.map(a => a.id === adjustmentId ? {
-        ...a,
-        status: updatedStatus,
-        reviewedBy: reviewer?.name || reviewerId
-      } : a)
+      stockAdjustments: state.stockAdjustments.map(a => a.id === id ? { ...a, status, reviewedBy: reviewerId } : a),
+      stockBalances: status === 'approved' ? newBalances : state.stockBalances,
+      batches: status === 'approved' ? newBatches : state.batches,
+      stockMovements: status === 'approved' ? newMovements : state.stockMovements,
+      serialUnits,
+      serialEvents
     });
 
-    state.writeAuditLog({
-      user: reviewer?.name || state.currentUser.name,
-      role: state.currentUser.role,
+    get().recordAudit({
+      action: `STOCK_ADJUSTMENT_${status.toUpperCase()}`,
       objectType: 'StockAdjustment',
       objectReference: adj.reference,
-      action: action === 'approved' ? 'ADJUSTMENT_APPROVED' : 'ADJUSTMENT_REJECTED',
-      beforeValues: { status: 'pending' },
-      afterValues: { status: updatedStatus, reviewedBy: reviewer?.name },
-      reason: `HSE Supervisor decision: ${action.toUpperCase()}`,
-      source: 'Screen'
+      performedBy: reviewerId
     });
-
     return { success: true };
   },
 
-  transferStock: (params) => {
+  // Stock Transfer with G6 Condition & Capacity Enforcement
+  transferStock: (ppeItemId, fromLocationId, toLocationId, batchNumber, quantity, byId, serialIds) => {
     const state = get();
-    const fromLoc = state.locations.find(l => l.id === params.fromLocationId);
-    const toLoc = state.locations.find(l => l.id === params.toLocationId);
+    const fromLoc = state.locations.find(l => l.id === fromLocationId);
+    const toLoc = state.locations.find(l => l.id === toLocationId);
 
-    // Enforce Stock Condition transfer routing matrix
-    if (fromLoc?.stockCondition === 'Used' && toLoc?.stockCondition === 'New') {
-      return { success: false, error: 'Transfer from Used to New location is strictly blocked.' };
-    }
-    if (fromLoc?.stockCondition === 'Scrap' || toLoc?.stockCondition === 'Scrap') {
-      return { success: false, error: 'Transfers directly into or out of a Scrap location are strictly blocked.' };
-    }
+    if (!fromLoc || !toLoc) return { success: false, message: 'Invalid source or destination location.' };
+    if (fromLocationId === toLocationId) return { success: false, message: 'Source and destination must be different.' };
 
-    const sourceBatch = state.batches.find(b => 
-      b.batchNumber === params.batchNumber && 
-      b.ppeItemId === params.ppeItemId && 
-      b.locationId === params.fromLocationId
-    );
-
-    if (!sourceBatch || sourceBatch.availableQty < params.quantity) {
-      return { success: false, error: 'Insufficient available quantity in selected batch.' };
-    }
-
-    // Deduct from source batch
-    let updatedBatches = state.batches.map(b => {
-      if (b.id === sourceBatch.id) {
-        return {
-          ...b,
-          quantity: b.quantity - params.quantity,
-          availableQty: b.availableQty - params.quantity,
-          status: b.availableQty - params.quantity <= 0 ? 'Depleted' as const : b.status
-        };
+    // PPE-058: a tracked item transfers picked serials; quantity = serials picked, units stay In Stock.
+    const trackedItem = state.ppeItems.find(p => p.id === ppeItemId);
+    let serialMove: ReturnType<typeof moveSerialUnits> | null = null;
+    const transferRef = `TRF-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+    if (trackedItem?.serialTracked) {
+      const ids = serialIds || [];
+      const picked = state.serialUnits.filter(u => ids.includes(u.id));
+      if (picked.some(u => u.batchNumber !== batchNumber)) {
+        return { success: false, message: 'All picked serials must belong to the selected batch.' };
       }
-      return b;
-    });
+      serialMove = moveSerialUnits(state.serialUnits, state.serialEvents, {
+        ppeItemId, serialIds: ids,
+        expect: { status: 'In Stock', locationId: fromLocationId },
+        to: { status: 'In Stock', locationId: toLocationId },
+        eventTypes: ['Transfer'], userId: byId, reference: transferRef,
+      }, state.describeSerialLocation);
+      if (!serialMove.ok) return { success: false, message: serialMove.message };
+      quantity = ids.length;
+    }
 
-    // Add to target batch (mark as Reused if target is Used)
-    const targetCondition = toLoc?.stockCondition === 'Used' ? 'Reused' : sourceBatch.condition;
-    const existingTargetBatch = updatedBatches.find(b => 
-      b.batchNumber === params.batchNumber && 
-      b.ppeItemId === params.ppeItemId && 
-      b.locationId === params.toLocationId
-    );
+    // Rule G6: Stock Condition Transitions
+    if (fromLoc.locationType === 'Scrap' || fromLoc.stockCondition === 'Scrap') {
+      return { success: false, message: 'Items in Scrap can never be transferred out (Rule G6).' };
+    }
+    if (toLoc.locationType === 'Scrap' || toLoc.stockCondition === 'Scrap') {
+      return { success: false, message: 'Stock cannot be moved into a Scrap location by transfer. Scrap comes only from returns and Stock OUT (Rule G6).' };
+    }
+    if ((fromLoc.locationType === 'Used' || fromLoc.stockCondition === 'Used') && toLoc.stockCondition === 'New') {
+      return { success: false, message: 'Used items cannot be transferred into a New stock location (Rule G6).' };
+    }
 
-    if (existingTargetBatch) {
-      updatedBatches = updatedBatches.map(b => b.id === existingTargetBatch.id ? {
-        ...b,
-        quantity: b.quantity + params.quantity,
-        availableQty: b.availableQty + params.quantity,
-        condition: targetCondition,
-        status: 'Active'
-      } : b);
+    // PPE-027: Item must be linked to destination location
+    const item = state.ppeItems.find(p => p.id === ppeItemId);
+    if (item && !item.locationIds.includes(toLocationId)) {
+      return { success: false, message: `Item ${item.itemCode} is not linked to destination location ${toLoc.name} (PPE-027).` };
+    }
+
+    // Capacity Check
+    const destTotalOnHand = state.stockBalances
+      .filter(b => b.locationId === toLocationId)
+      .reduce((sum, b) => sum + b.quantityOnHand, 0);
+
+    if (toLoc.capacityUnits && (destTotalOnHand + quantity > toLoc.capacityUnits)) {
+      return { success: false, message: `Transfer exceeds destination capacity (${destTotalOnHand + quantity} / ${toLoc.capacityUnits} units).` };
+    }
+
+    const sourceBatch = state.batches.find(b => b.batchNumber === batchNumber && b.ppeItemId === ppeItemId && b.locationId === fromLocationId);
+    if (!sourceBatch || sourceBatch.availableQty < quantity) {
+      return { success: false, message: `Insufficient batch quantity. Available: ${sourceBatch?.availableQty || 0}.` };
+    }
+
+    let newBalances = [...state.stockBalances];
+    let newBatches = [...state.batches];
+    let newMovements = [...state.stockMovements];
+
+    // Source balance
+    const fromIdx = newBalances.findIndex(b => b.ppeItemId === ppeItemId && b.locationId === fromLocationId);
+    if (fromIdx >= 0) {
+      newBalances[fromIdx] = { ...newBalances[fromIdx], quantityOnHand: Math.max(0, newBalances[fromIdx].quantityOnHand - quantity) };
+    }
+
+    // Target balance
+    const toIdx = newBalances.findIndex(b => b.ppeItemId === ppeItemId && b.locationId === toLocationId);
+    if (toIdx >= 0) {
+      newBalances[toIdx] = { ...newBalances[toIdx], quantityOnHand: newBalances[toIdx].quantityOnHand + quantity };
     } else {
-      updatedBatches.push({
+      newBalances.push({ id: generateId(), ppeItemId, locationId: toLocationId, quantityOnHand: quantity, quarantinedOnHand: 0 });
+    }
+
+    // Source batch update
+    const srcBatchIdx = newBatches.findIndex(b => b.id === sourceBatch.id);
+    const newSrcAvail = sourceBatch.availableQty - quantity;
+    newBatches[srcBatchIdx] = {
+      ...sourceBatch,
+      availableQty: newSrcAvail,
+      quantity: sourceBatch.quantity - quantity,
+      status: newSrcAvail <= 0 ? 'Depleted' : 'Active'
+    };
+
+    // Target batch update or creation
+    const tgtBatchIdx = newBatches.findIndex(b => b.batchNumber === batchNumber && b.ppeItemId === ppeItemId && b.locationId === toLocationId);
+    if (tgtBatchIdx >= 0) {
+      newBatches[tgtBatchIdx] = {
+        ...newBatches[tgtBatchIdx],
+        availableQty: newBatches[tgtBatchIdx].availableQty + quantity,
+        quantity: newBatches[tgtBatchIdx].quantity + quantity,
+        status: 'Active'
+      };
+    } else {
+      newBatches.push({
         ...sourceBatch,
-        id: `bat-trf-${Date.now()}`,
-        locationId: params.toLocationId,
-        quantity: params.quantity,
-        availableQty: params.quantity,
+        id: generateId(),
+        locationId: toLocationId,
+        availableQty: quantity,
+        quantity: quantity,
         quarantinedQty: 0,
-        condition: targetCondition,
+        isQuarantined: false,
         status: 'Active',
         createdAt: new Date().toISOString()
       });
     }
 
-    const currentToLocStock = updatedBatches
-      .filter(b => b.locationId === params.toLocationId)
-      .reduce((sum, b) => sum + b.quantity, 0);
-    const overcapacityWarning = toLoc ? (currentToLocStock > toLoc.capacityUnits) : false;
-
-    set({ batches: updatedBatches });
-
-    const ref = `TRF-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Stock',
-      objectReference: ref,
-      action: 'STOCK_TRANSFERRED',
-      beforeValues: { from: fromLoc?.nameEn, batch: params.batchNumber, qty: params.quantity },
-      afterValues: { to: toLoc?.nameEn, newCondition: targetCondition, overcapacityWarning },
-      reason: `Stock transfer from ${fromLoc?.nameEn} to ${toLoc?.nameEn}`,
-      source: 'Screen'
+    const ref = transferRef;
+    newMovements.push({
+      id: generateId(),
+      type: 'transfer',
+      ppeItemId,
+      locationId: fromLocationId,
+      toLocationId,
+      quantity,
+      reason: `Transfer from ${fromLoc.name} to ${toLoc.name}`,
+      reference: ref,
+      createdBy: byId,
+      createdAt: new Date().toISOString()
     });
 
-    return { success: true, overcapacityWarning };
+    set({
+      stockBalances: newBalances,
+      batches: newBatches,
+      stockMovements: newMovements,
+      ...(serialMove && serialMove.ok ? { serialUnits: serialMove.serialUnits, serialEvents: serialMove.serialEvents } : {})
+    });
+
+    get().recordAudit({
+      action: 'STOCK_TRANSFER',
+      objectType: 'Transfer',
+      objectReference: ref,
+      details: `Transferred ${quantity} units from ${fromLoc.name} to ${toLoc.name}` +
+        (serialMove && serialMove.ok ? ` (serials: ${serialMove.moved.map(u => u.serial).join(', ')})` : ''),
+      after: serialMove && serialMove.ok ? { serials: serialMove.moved.map(u => u.serial) } : undefined,
+      performedBy: byId
+    });
+
+    return { success: true };
   },
 
-  issueSinglePPE: (issuanceData) => {
+  // G9 Quarantine Management
+  quarantineBatch: (batchId, quantity, reason, byId) => {
     const state = get();
-    const ref = `ISS-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+    const batch = state.batches.find(b => b.id === batchId);
+    if (!batch || batch.availableQty < quantity) return;
+    // Serial units have no Quarantined status, so tracked stock cannot be quarantined.
+    if (state.ppeItems.find(p => p.id === batch.ppeItemId)?.serialTracked) return;
+
+    const newAvail = batch.availableQty - quantity;
+    const newQuar = (batch.quarantinedQty || 0) + quantity;
+
+    set({
+      batches: state.batches.map(b => b.id === batchId ? {
+        ...b,
+        availableQty: newAvail,
+        quarantinedQty: newQuar,
+        isQuarantined: true,
+        quarantineReason: reason
+      } : b),
+      stockBalances: state.stockBalances.map(bal => 
+        (bal.ppeItemId === batch.ppeItemId && bal.locationId === batch.locationId)
+          ? { ...bal, quarantinedOnHand: (bal.quarantinedOnHand || 0) + quantity }
+          : bal
+      )
+    });
+
+    get().recordAudit({
+      action: 'BATCH_QUARANTINE',
+      objectType: 'Batch',
+      objectReference: batch.batchNumber,
+      details: `Quarantined ${quantity} units: ${reason}`,
+      performedBy: byId,
+      reason
+    });
+  },
+
+  releaseQuarantineBatch: (batchId, quantity, byId) => {
+    const state = get();
+    const batch = state.batches.find(b => b.id === batchId);
+    if (!batch || (batch.quarantinedQty || 0) < quantity) return;
+
+    const newQuar = (batch.quarantinedQty || 0) - quantity;
+    const newAvail = batch.availableQty + quantity;
+
+    set({
+      batches: state.batches.map(b => b.id === batchId ? {
+        ...b,
+        availableQty: newAvail,
+        quarantinedQty: newQuar,
+        isQuarantined: newQuar > 0,
+        quarantineReason: newQuar > 0 ? b.quarantineReason : undefined
+      } : b),
+      stockBalances: state.stockBalances.map(bal => 
+        (bal.ppeItemId === batch.ppeItemId && bal.locationId === batch.locationId)
+          ? { ...bal, quarantinedOnHand: Math.max(0, (bal.quarantinedOnHand || 0) - quantity) }
+          : bal
+      )
+    });
+
+    get().recordAudit({
+      action: 'BATCH_RELEASE_QUARANTINE',
+      objectType: 'Batch',
+      objectReference: batch.batchNumber,
+      details: `Released ${quantity} quarantined units`,
+      performedBy: byId
+    });
+  },
+
+  // Lifespan & Gender Calculations
+  calculateLifespanDate: (item, startDate = new Date()) => {
+    const val = item.lifespanValue || 1;
+    if (item.lifespanType === 'Days') return addDays(startDate, val).toISOString();
+    if (item.lifespanType === 'Months') return addMonths(startDate, val).toISOString();
+    return addYears(startDate, val).toISOString();
+  },
+
+  validateGenderMatch: (employeeId, ppeItemId, variantValueId) => {
+    const state = get();
+    const emp = state.employees.find(e => e.id === employeeId);
+    const item = state.ppeItems.find(p => p.id === ppeItemId);
+    if (!emp || !item) return { valid: true };
+
+    const group = state.itemGroups.find(g => g.id === item.itemGroupId);
+    if (!group || !group.requiresGenderMatch) return { valid: true };
+
+    // Check item gender or variant gender
+    const targetGender = item.gender;
+    if (targetGender && targetGender !== 'Unisex' && emp.gender && targetGender !== emp.gender) {
+      return { valid: false, reason: `Gender mismatch: Item is for ${targetGender}, employee is ${emp.gender} (Rule G4).` };
+    }
+
+    return { valid: true };
+  },
+
+  // Single Item Issuance
+  issueItem: (issuanceData) => {
+    const state = get();
+    const id = generateId();
+    const item = issuanceData.ppeItemId ? state.ppeItems.find(p => p.id === issuanceData.ppeItemId) : undefined;
+    
+    // Auto-calculate expected replacement date from lifespan (Rule G5)
+    const expectedReplacementDate = item ? get().calculateLifespanDate(item, new Date(issuanceData.issueDate)) : undefined;
+
+    const ref = `ISS-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}-${id.slice(0, 3).toUpperCase()}`;
+
+    // PPE-058: a tracked item is issued by serial; quantity = serials picked, units become Issued.
+    let serialMove: ReturnType<typeof moveSerialUnits> | null = null;
+    if (item?.serialTracked) {
+      const ids = issuanceData.serialIds || [];
+      serialMove = moveSerialUnits(state.serialUnits, state.serialEvents, {
+        ppeItemId: item.id, serialIds: ids,
+        expect: { status: 'In Stock', locationId: issuanceData.locationId },
+        to: { status: 'Issued', holderEmployeeId: issuanceData.employeeId, holderName: issuanceData.holderName, holderIssuanceId: id },
+        eventTypes: ['Issue'], userId: issuanceData.issuedBy, reference: ref,
+      }, state.describeSerialLocation);
+      if (!serialMove.ok) return { success: false, id: '', message: serialMove.message };
+      issuanceData = { ...issuanceData, quantity: ids.length, serialIds: ids, batchNumber: undefined };
+    } else if (issuanceData.serialIds?.length) {
+      return { success: false, id: '', message: 'Serial numbers can only be picked for a serial-tracked item.' };
+    }
 
     const newIssuance: Issuance = {
       ...issuanceData,
-      id: `iss-${Date.now()}`,
+      id,
       reference: ref,
-      status: 'issued',
-      createdAt: new Date().toISOString()
+      expectedReplacementDate,
+      status: 'issued'
     };
 
-    // Deduct from batch
-    const updatedBatches = state.batches.map(b => {
-      if (b.batchNumber === issuanceData.batchNumber && 
-          b.ppeItemId === issuanceData.ppeItemId && 
-          b.locationId === issuanceData.locationId) {
-        return {
-          ...b,
-          quantity: Math.max(0, b.quantity - issuanceData.quantity),
-          availableQty: Math.max(0, b.availableQty - issuanceData.quantity)
-        };
-      }
-      return b;
-    });
+    // Deduct stock
+    let newBalances = [...state.stockBalances];
+    let newBatches = serialMove && serialMove.ok
+      ? deductSerialBatches(state.batches, serialMove.moved, issuanceData.locationId)
+      : [...state.batches];
+    let newMovements = [...state.stockMovements];
 
-    // Check if employee last received sizes need to be updated
-    const updatedEmployees = state.employees.map(emp => {
-      if (emp.id === issuanceData.employeeId && issuanceData.variantKey && issuanceData.ppeItemId) {
-        return {
-          ...emp,
-          lastReceivedSizes: {
-            ...emp.lastReceivedSizes,
-            [issuanceData.ppeItemId]: { rawKey: issuanceData.variantKey }
-          }
-        };
+    if (issuanceData.ppeItemId) {
+      const balIdx = newBalances.findIndex(b => b.ppeItemId === issuanceData.ppeItemId && b.locationId === issuanceData.locationId);
+      if (balIdx >= 0) {
+        newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: Math.max(0, newBalances[balIdx].quantityOnHand - issuanceData.quantity) };
       }
-      return emp;
-    });
 
-    // Handle replaces issuance if specified
-    let updatedIssuances = [...state.issuances, newIssuance];
+      if (issuanceData.batchNumber) {
+        const batchIdx = newBatches.findIndex(b => b.batchNumber === issuanceData.batchNumber && b.ppeItemId === issuanceData.ppeItemId && b.locationId === issuanceData.locationId);
+        if (batchIdx >= 0) {
+          const updatedAvail = Math.max(0, newBatches[batchIdx].availableQty - issuanceData.quantity);
+          newBatches[batchIdx] = {
+            ...newBatches[batchIdx],
+            availableQty: updatedAvail,
+            status: updatedAvail <= 0 ? 'Depleted' : 'Active'
+          };
+        }
+      }
+
+      newMovements.push({
+        id: generateId(),
+        type: 'out',
+        ppeItemId: issuanceData.ppeItemId,
+        locationId: issuanceData.locationId,
+        quantity: issuanceData.quantity,
+        reason: `Issued to ${issuanceData.employeeId ? 'Employee' : 'Visitor'}`,
+        reference: ref,
+        createdBy: issuanceData.issuedBy,
+        createdAt: new Date().toISOString()
+      });
+    }
+
+    let updatedIssuances = [newIssuance, ...state.issuances];
     if (issuanceData.replacesIssuanceId) {
-      updatedIssuances = updatedIssuances.map(i => i.id === issuanceData.replacesIssuanceId ? { ...i, status: 'returned' as const } : i);
+      updatedIssuances = updatedIssuances.map(i => 
+        i.id === issuanceData.replacesIssuanceId ? { ...i, status: 'replaced' as const } : i
+      );
+      get().recordAudit({
+        action: 'REPLACE_ISSUANCE',
+        objectType: 'Issuance',
+        objectReference: issuanceData.replacesIssuanceId,
+        details: `Replaced by new issuance ${ref}`,
+        performedBy: issuanceData.issuedBy
+      });
     }
 
     set({
       issuances: updatedIssuances,
-      batches: updatedBatches,
-      employees: updatedEmployees
+      stockBalances: newBalances,
+      batches: newBatches,
+      stockMovements: newMovements,
+      ...(serialMove && serialMove.ok ? { serialUnits: serialMove.serialUnits, serialEvents: serialMove.serialEvents } : {})
     });
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
+    get().recordAudit({
+      action: 'ISSUE_PPE',
       objectType: 'Issuance',
       objectReference: ref,
-      action: 'SINGLE_ITEM_ISSUED',
-      beforeValues: null,
-      afterValues: { employeeId: issuanceData.employeeId, ppeItemId: issuanceData.ppeItemId, quantity: issuanceData.quantity },
-      reason: issuanceData.replacesIssuanceId ? `Replaces prior issuance ${issuanceData.replacesIssuanceId}` : 'Standard issuance',
-      source: 'Screen'
+      after: serialMove && serialMove.ok ? { ...newIssuance, serials: serialMove.moved.map(u => u.serial) } : newIssuance,
+      performedBy: issuanceData.issuedBy
     });
 
-    return ref;
+    return { success: true, id };
   },
 
-  issueKitPPE: (params) => {
+  // Kit Issuance with Rule G7 (single signature pair) and G8 (partial issuance)
+  issueKit: ({ employeeId, kitId, locationId, quantity, itemVariants = {}, selectedItemIds, itemSerials = {}, storeKeeperSignature, receiverSignature, issuedBy }) => {
     const state = get();
-    const kit = state.kits.find(k => k.id === params.kitId);
-    let issuedCount = 0;
-    let skippedCount = 0;
-    const newIssuances: Issuance[] = [];
-    let updatedBatches = [...state.batches];
+    const kit = state.kits.find(k => k.id === kitId);
+    if (!kit) return { success: false, issuanceIds: [], message: 'Kit not found.' };
 
-    params.lines.forEach(line => {
-      const ppe = state.ppeItems.find(p => p.id === line.ppeItemId);
-      if (!ppe) return;
+    const itemsToIssue = kit.items.filter(ki => !selectedItemIds || selectedItemIds.includes(ki.ppeItemId));
+    const issuanceIds: string[] = [];
 
-      // Find available batch
-      const availableBatch = updatedBatches.find(b => 
-        b.ppeItemId === line.ppeItemId && 
-        b.locationId === params.locationId && 
-        b.availableQty >= line.quantity
-      );
-
-      if (!availableBatch) {
-        // Skip out of stock item with no open sub-request created (BD-I468)
-        skippedCount++;
-        return;
+    // PPE-058: each unit of a tracked kit line needs its own serial. Check every line before issuing any.
+    for (const ki of itemsToIssue) {
+      const ppeItem = state.ppeItems.find(p => p.id === ki.ppeItemId);
+      if (!ppeItem?.serialTracked) continue;
+      const reqQty = ki.qty * quantity;
+      const inStock = state.inStockSerials(ppeItem.id, locationId).length;
+      const expected = Math.min(reqQty, inStock);
+      const picked = itemSerials[ki.ppeItemId] || [];
+      if (expected > 0 && picked.length !== expected) {
+        return { success: false, issuanceIds: [], message: `${ppeItem.itemCode}: pick ${expected} serial number(s), one per unit (${picked.length} picked).` };
       }
+      for (const sid of picked) {
+        const u = state.serialUnits.find(s => s.id === sid);
+        if (!u || u.ppeItemId !== ppeItem.id || u.status !== 'In Stock' || u.locationId !== locationId) {
+          return { success: false, issuanceIds: [], message: `${u?.serial || sid} is not In Stock at this location${u ? ` (${state.describeSerialLocation(u)})` : ''}.` };
+        }
+      }
+    }
 
-      // Calculate Expected Replacement Date
-      const issueDate = new Date();
-      let replDate = new Date(issueDate);
-      if (ppe.lifespanUnit === 'Days') replDate.setDate(replDate.getDate() + ppe.lifespanValue);
-      else if (ppe.lifespanUnit === 'Months') replDate.setMonth(replDate.getMonth() + ppe.lifespanValue);
-      else if (ppe.lifespanUnit === 'Years') replDate.setFullYear(replDate.getFullYear() + ppe.lifespanValue);
+    for (const ki of itemsToIssue) {
+      const ppeItem = state.ppeItems.find(p => p.id === ki.ppeItemId);
+      if (!ppeItem) continue;
 
-      const ref = `ISS-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
-      newIssuances.push({
-        id: `iss-${Date.now()}-${line.ppeItemId}`,
-        reference: ref,
-        employeeId: params.employeeId,
-        ppeItemId: line.ppeItemId,
-        kitId: params.kitId,
-        locationId: params.locationId,
-        quantity: line.quantity,
-        batchNumber: availableBatch.batchNumber,
-        variantKey: line.variantKey,
-        conditionAtIssue: availableBatch.condition === 'Reused' ? 'Reused' : 'New',
-        issueDate: issueDate.toISOString().split('T')[0],
-        expectedReplacementDate: replDate.toISOString().split('T')[0],
-        storeKeeperSignature: params.storeKeeperSignature,
-        receiverSignature: params.receiverSignature,
-        status: 'issued',
-        issuedBy: state.currentUser.name,
-        createdAt: new Date().toISOString()
+      const reqQty = ki.qty * quantity;
+      const bal = get().stockBalances.find(b => b.ppeItemId === ki.ppeItemId && b.locationId === locationId);
+      const availQty = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
+
+      // Rule G8: Partial issuance when stock is limited
+      const issueQty = ppeItem.serialTracked ? (itemSerials[ki.ppeItemId] || []).length : Math.min(reqQty, availQty);
+      if (issueQty <= 0) continue; // Skip out-of-stock items without blocking others
+
+      // Find FIFO batch
+      const batch = state.batches
+        .filter(b => b.ppeItemId === ki.ppeItemId && b.locationId === locationId && b.availableQty > 0 && b.status === 'Active')
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
+
+      const res = get().issueItem({
+        employeeId,
+        kitId,
+        ppeItemId: ki.ppeItemId,
+        locationId,
+        quantity: issueQty,
+        batchNumber: batch?.batchNumber,
+        variantKey: itemVariants[ki.ppeItemId] || ki.variantKey,
+        issueDate: new Date().toISOString(),
+        serialIds: ppeItem.serialTracked ? itemSerials[ki.ppeItemId] : undefined,
+        storeKeeperSignature,
+        receiverSignature,
+        issuedBy
       });
 
-      // Deduct stock
-      updatedBatches = updatedBatches.map(b => b.id === availableBatch.id ? {
-        ...b,
-        quantity: b.quantity - line.quantity,
-        availableQty: b.availableQty - line.quantity
-      } : b);
+      if (res.success) issuanceIds.push(res.id);
+    }
 
-      issuedCount++;
-    });
+    return { success: issuanceIds.length > 0, issuanceIds, message: issuanceIds.length === 0 ? 'Nothing was issued: no line had stock.' : undefined };
+  },
+
+  // Multi-line Loan Issuance (PPE-036, PPE-041)
+  issueLoan: ({ holderName, holderType, companyName, contactNumber, hostEmployeeId, locationId, expectedReturnDate, items, storeKeeperSignature, receiverSignature, issuedBy }) => {
+    const state = get();
+    const loanId = generateId();
+    const ref = `LN-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+
+    // PPE-058: tracked lines loan picked serials (On Loan to the borrower). All lines or nothing.
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    const movedByLine: SerialUnit[][] = [];
+    items = items.map(it => ({ ...it })); // never mutate the caller's lines
+    for (const it of items) {
+      const item = state.ppeItems.find(p => p.id === it.ppeItemId);
+      if (!item?.serialTracked) { movedByLine.push([]); continue; }
+      const res = moveSerialUnits(serialUnits, serialEvents, {
+        ppeItemId: item.id, serialIds: it.serialIds || [],
+        expect: { status: 'In Stock', locationId },
+        to: { status: 'On Loan', holderName: companyName ? `${holderName} (${companyName})` : holderName, holderIssuanceId: loanId },
+        eventTypes: ['Loan'], userId: issuedBy, reference: ref,
+      }, state.describeSerialLocation);
+      if (!res.ok) return { success: false, reference: '', message: `${item.itemCode}: ${res.message}` };
+      serialUnits = res.serialUnits;
+      serialEvents = res.serialEvents;
+      movedByLine.push(res.moved);
+      it.quantity = (it.serialIds || []).length;
+    }
+
+    const lineItems: LoanLineItem[] = items.map((it, i) => ({
+      id: generateId(),
+      ppeItemId: it.ppeItemId,
+      quantity: it.quantity,
+      returnedQty: 0,
+      status: 'open' as const,
+      ...(movedByLine[i].length ? { serialIds: movedByLine[i].map(u => u.id), returnedSerialIds: [] } : {})
+    }));
+
+    const totalQty = items.reduce((sum, it) => sum + it.quantity, 0);
+
+    let newBalances = [...state.stockBalances];
+    let newBatches = [...state.batches];
+    let newMovements = [...state.stockMovements];
+
+    for (const it of items) {
+      // Deduct from stock balances
+      const balIdx = newBalances.findIndex(b => b.ppeItemId === it.ppeItemId && b.locationId === locationId);
+      if (balIdx >= 0) {
+        newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: Math.max(0, newBalances[balIdx].quantityOnHand - it.quantity) };
+      }
+
+      // Tracked line: deduct the batch of each picked serial
+      const lineIdx = items.indexOf(it);
+      if (movedByLine[lineIdx].length > 0) {
+        newBatches = deductSerialBatches(newBatches, movedByLine[lineIdx], locationId);
+      }
+
+      // Deduct from FIFO batch
+      let batchToDeduct = movedByLine[lineIdx].length > 0 ? undefined : it.batchNumber;
+      if (!batchToDeduct && movedByLine[lineIdx].length === 0) {
+        const foundBatch = newBatches.find(b => b.ppeItemId === it.ppeItemId && b.locationId === locationId && b.availableQty >= it.quantity && b.status === 'Active');
+        batchToDeduct = foundBatch?.batchNumber;
+      }
+      if (batchToDeduct) {
+        const batchIdx = newBatches.findIndex(b => b.batchNumber === batchToDeduct && b.ppeItemId === it.ppeItemId && b.locationId === locationId);
+        if (batchIdx >= 0) {
+          const updatedAvail = Math.max(0, newBatches[batchIdx].availableQty - it.quantity);
+          newBatches[batchIdx] = {
+            ...newBatches[batchIdx],
+            availableQty: updatedAvail,
+            status: updatedAvail <= 0 ? 'Depleted' : 'Active'
+          };
+        }
+      }
+
+      newMovements.push({
+        id: generateId(),
+        type: 'out',
+        ppeItemId: it.ppeItemId,
+        locationId,
+        quantity: it.quantity,
+        reason: `Temporary custody loan to ${holderName} (${companyName || holderType})`,
+        reference: ref,
+        createdBy: issuedBy,
+        createdAt: new Date().toISOString()
+      });
+    }
+
+    const newLoanIssuance: Issuance = {
+      id: loanId,
+      reference: ref,
+      holderName,
+      holderType,
+      companyName,
+      contactNumber,
+      hostEmployeeId,
+      locationId,
+      quantity: totalQty,
+      ppeItemId: items[0]?.ppeItemId,
+      batchNumber: items[0]?.batchNumber,
+      issueDate: new Date().toISOString(),
+      expectedReturnDate,
+      storeKeeperSignature,
+      receiverSignature,
+      status: 'issued',
+      isLoan: true,
+      issuedBy,
+      lines: lineItems
+    };
 
     set({
-      issuances: [...state.issuances, ...newIssuances],
-      batches: updatedBatches
+      issuances: [newLoanIssuance, ...state.issuances],
+      stockBalances: newBalances,
+      batches: newBatches,
+      stockMovements: newMovements,
+      serialUnits,
+      serialEvents
     });
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
+    get().recordAudit({
+      action: 'ISSUE_LOAN',
       objectType: 'Issuance',
-      objectReference: kit?.nameEn || params.kitId,
-      action: 'KIT_ISSUED',
-      beforeValues: null,
-      afterValues: { employeeId: params.employeeId, kitId: params.kitId, issuedCount, skippedCount },
-      reason: `Kit issuance: ${issuedCount} items issued, ${skippedCount} skipped due to stock`,
-      source: 'Screen'
+      objectReference: ref,
+      details: `Issued temporary custody loan to ${holderName} (${companyName || holderType}) with ${items.length} line items`,
+      performedBy: issuedBy
     });
 
-    return { issuedCount, skippedCount };
+    return { success: true, reference: ref, id: loanId };
   },
 
-  returnPPE: (params) => {
+  // Multi-line Loan Return (PPE-037, Rule G6, PPE-038)
+  returnLoan: ({ loanId, returnedLines, storeKeeperSignature, receiverSignature, returnedBy }) => {
     const state = get();
-    const issuance = state.issuances.find(i => i.id === params.issuanceId);
-    if (!issuance) return { success: false, error: 'Issuance record not found.' };
-
-    const issuingLoc = state.locations.find(l => l.id === issuance.locationId);
-    const site = issuingLoc ? issuingLoc.site : 'Cairo Site';
-
-    let targetLocationId: string | undefined;
-
-    if (params.condition === 'good') {
-      // Good return routes to Used location of SAME SITE
-      const usedLoc = state.locations.find(l => l.site === site && l.stockCondition === 'Used' && l.active);
-      if (!usedLoc) {
-        return { success: false, error: `No active Used-condition location found at site "${site}".` };
-      }
-      targetLocationId = usedLoc.id;
-    } else if (params.condition === 'damaged' || params.condition === 'worn_out') {
-      // Damaged/Worn out routes to Scrap location of SAME SITE
-      const scrapLoc = state.locations.find(l => l.site === site && l.stockCondition === 'Scrap' && l.active);
-      if (!scrapLoc) {
-        // Block return with clear error message if site has no Scrap location (BD-I472)
-        return { success: false, error: `Site "${site}" does not have an active Scrap-condition location. Damaged or worn-out returns cannot be processed until a Scrap location is created for this site.` };
-      }
-      targetLocationId = scrapLoc.id;
+    const loan = state.issuances.find(i => i.id === loanId);
+    if (!loan || loan.status === 'returned') {
+      return { success: false, message: 'Loan not found or already closed.' };
     }
 
-    // Update stock if physical return
-    let updatedBatches = [...state.batches];
-    if (targetLocationId && params.condition !== 'lost') {
-      const isScrap = params.condition === 'damaged' || params.condition === 'worn_out';
-      updatedBatches.push({
-        id: `bat-ret-${Date.now()}`,
-        batchNumber: issuance.batchNumber || `RET-${Date.now().toString().slice(-4)}`,
-        ppeItemId: issuance.ppeItemId || '',
-        locationId: targetLocationId,
-        variantKey: issuance.variantKey,
-        quantity: params.quantity,
-        availableQty: isScrap ? 0 : params.quantity,
-        quarantinedQty: 0,
-        condition: isScrap ? 'Scrapped' : 'Reused',
-        status: isScrap ? 'Depleted' : 'Active',
-        createdAt: new Date().toISOString()
+    let updatedLines = loan.lines ? [...loan.lines] : [];
+    let newBalances = [...state.stockBalances];
+    let newScraps = [...state.scrapEntries];
+    let newMovements = [...state.stockMovements];
+    let newReturns = [...state.issuanceReturns];
+
+    const usedLoc = state.locations.find(l => l.locationType === 'Used' || l.stockCondition === 'Used') || state.locations[0];
+    const scrapLoc = state.locations.find(l => l.locationType === 'Scrap' || l.stockCondition === 'Scrap') || state.locations[0];
+
+    // PPE-058: tracked lines return the exact serials the borrower holds. Validate all before changing anything.
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    const returnedSerialsByLine = new Map<string, string[]>();
+    returnedLines = returnedLines.map(r => ({ ...r }));
+    for (const ret of returnedLines) {
+      const line = updatedLines.find(l => l.id === ret.lineId);
+      const item = line && state.ppeItems.find(p => p.id === line.ppeItemId);
+      if (!line || !item?.serialTracked) continue;
+      const ids = ret.serialIds || [];
+      if (ids.length === 0) return { success: false, message: `${item.itemCode}: pick or scan the returned serial numbers.` };
+      for (const sid of ids) {
+        const u = serialUnits.find(s => s.id === sid);
+        if (!u) return { success: false, message: `Serial ${sid} does not exist.` };
+        if (!line.serialIds?.includes(sid) || line.returnedSerialIds?.includes(sid)) {
+          return { success: false, message: `${u.serial} is not held by this borrower. ${state.describeSerialLocation(u)}.` };
+        }
+      }
+      const target = serialReturnTarget(ret.condition, usedLoc.id, scrapLoc.id);
+      const res = moveSerialUnits(serialUnits, serialEvents, {
+        ppeItemId: item.id, serialIds: ids,
+        expect: { status: 'On Loan', holderIssuanceId: loanId },
+        to: target.to, eventTypes: ['Loan return', ...target.extraEvents],
+        userId: returnedBy, reference: loan.reference || loan.id, note: `Condition: ${ret.condition}`,
+      }, state.describeSerialLocation);
+      if (!res.ok) return { success: false, message: res.message };
+      serialUnits = res.serialUnits;
+      serialEvents = res.serialEvents;
+      ret.quantity = ids.length;
+      returnedSerialsByLine.set(line.id, ids);
+    }
+
+    for (const ret of returnedLines) {
+      const lineIdx = updatedLines.findIndex(l => l.id === ret.lineId);
+      if (lineIdx === -1) continue;
+
+      const currentLine = updatedLines[lineIdx];
+      const prevReturned = currentLine.returnedQty || 0;
+      const newReturned = prevReturned + ret.quantity;
+      const isLineClosed = newReturned >= currentLine.quantity;
+
+      updatedLines[lineIdx] = {
+        ...currentLine,
+        returnedQty: newReturned,
+        condition: ret.condition,
+        status: isLineClosed ? 'returned' : 'open',
+        ...(returnedSerialsByLine.has(currentLine.id)
+          ? { returnedSerialIds: [...(currentLine.returnedSerialIds || []), ...returnedSerialsByLine.get(currentLine.id)!] }
+          : {})
+      };
+
+      const ppeItemId = currentLine.ppeItemId;
+
+      // Condition routing (Rule G6)
+      if (ret.condition === 'good' && ppeItemId) {
+        // Routes to Used location
+        const balIdx = newBalances.findIndex(b => b.ppeItemId === ppeItemId && b.locationId === usedLoc.id);
+        if (balIdx >= 0) {
+          newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: newBalances[balIdx].quantityOnHand + ret.quantity };
+        } else {
+          newBalances.push({ id: generateId(), ppeItemId, locationId: usedLoc.id, quantityOnHand: ret.quantity, quarantinedOnHand: 0 });
+        }
+
+        newMovements.push({
+          id: generateId(),
+          type: 'in',
+          ppeItemId,
+          locationId: usedLoc.id,
+          quantity: ret.quantity,
+          reason: `Loan line returned (Good -> Used) [${loan.reference || loan.id}]`,
+          reference: loan.reference || loan.id,
+          createdBy: returnedBy,
+          createdAt: new Date().toISOString()
+        });
+      } else if ((ret.condition === 'damaged' || ret.condition === 'worn_out') && ppeItemId) {
+        // Auto-scraps to Scrap location (Rule G6 & PPE-038)
+        const newScrapId = generateId();
+        newScraps.push({
+          id: newScrapId,
+          ppeItemId,
+          locationId: scrapLoc.id,
+          quantity: ret.quantity,
+          reason: `Auto-scrapped from loan return (Condition: ${ret.condition}) [${loan.reference || loan.id}]`,
+          relatedReferenceId: loan.id,
+          reversed: false,
+          scrappedBy: returnedBy,
+          createdAt: new Date().toISOString()
+        });
+
+        const balIdx = newBalances.findIndex(b => b.ppeItemId === ppeItemId && b.locationId === scrapLoc.id);
+        if (balIdx >= 0) {
+          newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: newBalances[balIdx].quantityOnHand + ret.quantity };
+        } else {
+          newBalances.push({ id: generateId(), ppeItemId, locationId: scrapLoc.id, quantityOnHand: ret.quantity, quarantinedOnHand: 0 });
+        }
+
+        newMovements.push({
+          id: generateId(),
+          type: 'in',
+          ppeItemId,
+          locationId: scrapLoc.id,
+          quantity: ret.quantity,
+          reason: `Loan line returned (Damaged -> Scrap) [${loan.reference || loan.id}]`,
+          reference: loan.reference || loan.id,
+          createdBy: returnedBy,
+          createdAt: new Date().toISOString()
+        });
+      }
+      // If lost: closed with no inventory restored
+
+      newReturns.push({
+        id: generateId(),
+        issuanceId: loan.id,
+        lineId: ret.lineId,
+        condition: ret.condition,
+        physicalReceiptConfirmed: ret.condition !== 'lost',
+        autoScrapped: ret.condition === 'damaged' || ret.condition === 'worn_out',
+        returnedBy,
+        returnDate: new Date().toISOString()
       });
     }
 
-    const returnRecord: IssuanceReturn = {
-      id: `ret-${Date.now()}`,
-      issuanceId: params.issuanceId,
-      quantityReturned: params.quantity,
-      condition: params.condition,
-      physicalReceiptConfirmed: params.physicalReceiptConfirmed,
-      returnedToLocationId: targetLocationId,
-      storeKeeperSignature: params.storeKeeperSignature,
-      receiverSignature: params.receiverSignature,
-      returnedBy: state.currentUser.name,
+    const allLinesClosed = updatedLines.length > 0 && updatedLines.every(l => l.status === 'returned' || (l.returnedQty || 0) >= l.quantity);
+
+    set({
+      issuances: state.issuances.map(i => i.id === loanId ? {
+        ...i,
+        lines: updatedLines,
+        status: allLinesClosed ? 'returned' as const : 'issued' as const
+      } : i),
+      stockBalances: newBalances,
+      scrapEntries: newScraps,
+      stockMovements: newMovements,
+      issuanceReturns: newReturns,
+      serialUnits,
+      serialEvents
+    });
+
+    get().recordAudit({
+      action: 'RETURN_LOAN',
+      objectType: 'Issuance',
+      objectReference: loan.reference || loan.id,
+      details: `Loan items returned (${returnedLines.length} line(s)). Status: ${allLinesClosed ? 'Closed' : 'Partially Returned'}`,
+      performedBy: returnedBy
+    });
+
+    return { success: true };
+  },
+
+  returnLoanLine: (issuanceId, lineId, condition, returnedBy) => {
+    const state = get();
+    const issuance = state.issuances.find(i => i.id === issuanceId);
+    if (!issuance) return;
+
+    if (issuance.lines && issuance.lines.length > 0) {
+      const line = issuance.lines.find(l => l.id === lineId);
+      const remainingQty = line ? Math.max(1, line.quantity - (line.returnedQty || 0)) : 1;
+      // Whole-line return: a tracked line returns every serial still out on it.
+      const outstanding = line?.serialIds?.filter(s => !line.returnedSerialIds?.includes(s));
+      get().returnLoan({
+        loanId: issuanceId,
+        returnedLines: [{ lineId, quantity: remainingQty, condition, serialIds: outstanding }],
+        returnedBy
+      });
+    } else {
+      get().returnItem(issuanceId, condition, condition !== 'lost', returnedBy);
+    }
+  },
+
+  // PPE Returns (PPE-038) with Condition Routing (G6)
+  returnItem: (issuanceId, condition, physicalReceiptConfirmed, returnedBy, options) => {
+    const state = get();
+    const issuance = state.issuances.find(i => i.id === issuanceId);
+    if (!issuance || issuance.status === 'returned') return { success: false, message: 'Issuance not found or already returned.' };
+
+    let returnQty = (options?.quantity && options.quantity > 0) ? Math.min(options.quantity, issuance.quantity) : issuance.quantity;
+    const isDamagedOrWornOut = condition === 'damaged' || condition === 'worn_out';
+    const autoScrapped = isDamagedOrWornOut && physicalReceiptConfirmed;
+
+    // PPE-058: a tracked item returns the exact serials the employee holds on this issuance.
+    const item = state.ppeItems.find(p => p.id === issuance.ppeItemId);
+    let serialMove: ReturnType<typeof moveSerialUnits> | null = null;
+    if (item?.serialTracked && issuance.serialIds?.length) {
+      const ids = options?.serialIds || [];
+      if (ids.length === 0) return { success: false, message: 'Pick or scan the returned serial numbers.' };
+      for (const sid of ids) {
+        const u = state.serialUnits.find(s => s.id === sid);
+        if (!u) return { success: false, message: `Serial ${sid} does not exist.` };
+        if (!issuance.serialIds.includes(sid) || issuance.returnedSerialIds?.includes(sid) || u.holderIssuanceId !== issuanceId) {
+          return { success: false, message: `${u.serial} is not held by this employee on this issuance. ${state.describeSerialLocation(u)}.` };
+        }
+      }
+      const usedLocId = (state.locations.find(l => l.locationType === 'Used' || l.stockCondition === 'Used') || state.locations[0]).id;
+      const scrapLocId = (state.locations.find(l => isScrapLocation(l)) || state.locations[0]).id;
+      const target = serialReturnTarget(condition, usedLocId, scrapLocId, physicalReceiptConfirmed);
+      serialMove = moveSerialUnits(state.serialUnits, state.serialEvents, {
+        ppeItemId: item.id, serialIds: ids,
+        expect: { status: 'Issued', holderIssuanceId: issuanceId },
+        to: target.to, eventTypes: ['Return', ...target.extraEvents],
+        userId: returnedBy, reference: issuance.reference || issuance.id, note: `Condition: ${condition}`,
+      }, state.describeSerialLocation);
+      if (!serialMove.ok) return { success: false, message: serialMove.message };
+      returnQty = ids.length;
+    }
+
+    const newReturn: IssuanceReturn = {
+      id: generateId(),
+      issuanceId,
+      quantity: returnQty,
+      condition,
+      physicalReceiptConfirmed,
+      autoScrapped,
+      storeKeeperSignature: options?.storeKeeperSignature,
+      employeeSignature: options?.employeeSignature,
+      returnedBy,
       returnDate: new Date().toISOString()
     };
 
-    // Close or partially close issuance
-    const isFullReturn = params.quantity >= issuance.quantity;
-    const updatedIssuances = state.issuances.map(i => i.id === params.issuanceId ? {
-      ...i,
-      quantity: Math.max(0, i.quantity - params.quantity),
-      status: isFullReturn ? (params.condition === 'lost' ? 'lost' : 'returned') : i.status
-    } : i);
+    let newBalances = [...state.stockBalances];
+    let newScraps = [...state.scrapEntries];
+
+    // G6: Good condition routes to Used location
+    if (condition === 'good' && issuance.ppeItemId) {
+      const usedLoc = state.locations.find(l => l.locationType === 'Used' || l.stockCondition === 'Used') || state.locations[0];
+      const balIdx = newBalances.findIndex(b => b.ppeItemId === issuance.ppeItemId && b.locationId === usedLoc.id);
+      if (balIdx >= 0) {
+        newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: newBalances[balIdx].quantityOnHand + returnQty };
+      } else {
+        newBalances.push({ id: generateId(), ppeItemId: issuance.ppeItemId, locationId: usedLoc.id, quantityOnHand: returnQty, quarantinedOnHand: 0 });
+      }
+    } else if (autoScrapped && issuance.ppeItemId) {
+      // G6: Damaged or Worn Out routes to Scrap location
+      const scrapLoc = state.locations.find(l => l.locationType === 'Scrap' || l.stockCondition === 'Scrap') || state.locations[0];
+      const newScrapId = generateId();
+      newScraps.push({
+        id: newScrapId,
+        ppeItemId: issuance.ppeItemId,
+        locationId: scrapLoc.id,
+        batchNumber: issuance.batchNumber,
+        quantity: returnQty,
+        reason: `Auto-scrapped from return (Condition: ${condition})`,
+        relatedReferenceId: issuance.id,
+        reversed: false,
+        scrappedBy: returnedBy,
+        createdAt: new Date().toISOString()
+      });
+
+      const balIdx = newBalances.findIndex(b => b.ppeItemId === issuance.ppeItemId && b.locationId === scrapLoc.id);
+      if (balIdx >= 0) {
+        newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: newBalances[balIdx].quantityOnHand + returnQty };
+      } else {
+        newBalances.push({ id: generateId(), ppeItemId: issuance.ppeItemId, locationId: scrapLoc.id, quantityOnHand: returnQty, quarantinedOnHand: 0 });
+      }
+    }
+
+    const remainingQty = issuance.quantity - returnQty;
+    const isFullyReturned = remainingQty <= 0;
 
     set({
-      issuances: updatedIssuances,
-      issuanceReturns: [...state.issuanceReturns, returnRecord],
-      batches: updatedBatches
+      issuances: state.issuances.map(i => i.id === issuanceId ? {
+        ...i,
+        quantity: remainingQty > 0 ? remainingQty : i.quantity,
+        status: isFullyReturned ? ('returned' as const) : ('partially_returned' as const),
+        ...(serialMove && serialMove.ok
+          ? { returnedSerialIds: [...(i.returnedSerialIds || []), ...serialMove.moved.map(u => u.id)] }
+          : {})
+      } : i),
+      issuanceReturns: [newReturn, ...state.issuanceReturns],
+      stockBalances: newBalances,
+      scrapEntries: newScraps,
+      ...(serialMove && serialMove.ok ? { serialUnits: serialMove.serialUnits, serialEvents: serialMove.serialEvents } : {})
     });
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
+    get().recordAudit({
+      action: 'RETURN_PPE',
       objectType: 'Issuance',
-      objectReference: issuance.reference,
-      action: 'ITEM_RETURNED',
-      beforeValues: { status: issuance.status, quantity: issuance.quantity },
-      afterValues: { condition: params.condition, targetLocationId, quantityReturned: params.quantity },
-      reason: `Return processed: ${params.condition}`,
-      source: 'Screen'
+      objectReference: issuance.reference || issuance.id,
+      details: `Returned ${returnQty} unit(s) with condition ${condition}. ${isFullyReturned ? 'Fully returned.' : `Remaining: ${remainingQty}`}` +
+        (serialMove && serialMove.ok ? ` Serials: ${serialMove.moved.map(u => `${u.serial} -> ${u.status}`).join(', ')}` : ''),
+      performedBy: returnedBy
     });
-
     return { success: true };
   },
 
-  issueVisitorLoan: (loanData) => {
+  // Scrap Reversal (PPE-039)
+  reverseScrap: (id, reason, reversedBy) => {
     const state = get();
-    const loanNum = `LN-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+    const scrap = state.scrapEntries.find(s => s.id === id);
+    if (!scrap || scrap.reversed) return;
 
-    const newLoan: VisitorLoan = {
-      ...loanData,
-      id: `loan-${Date.now()}`,
-      loanNumber: loanNum,
-      status: 'Open',
-      createdAt: new Date().toISOString()
-    };
+    const usedLoc = state.locations.find(l => l.locationType === 'Used' || l.stockCondition === 'Used') || state.locations[0];
+    let newBalances = [...state.stockBalances];
 
-    // Deduct stock for each loan item
-    let updatedBatches = [...state.batches];
-    loanData.items.forEach(item => {
-      updatedBatches = updatedBatches.map(b => {
-        if (b.batchNumber === item.batchNumber && b.ppeItemId === item.ppeItemId && b.locationId === item.fromLocationId) {
-          return {
-            ...b,
-            quantity: Math.max(0, b.quantity - item.quantity),
-            availableQty: Math.max(0, b.availableQty - item.quantity)
-          };
-        }
-        return b;
-      });
-    });
-
-    set({
-      visitorLoans: [newLoan, ...state.visitorLoans],
-      batches: updatedBatches
-    });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Loan',
-      objectReference: loanNum,
-      action: 'LOAN_ISSUED',
-      beforeValues: null,
-      afterValues: { recipientName: loanData.recipientName, itemsCount: loanData.items.length },
-      reason: `Loan issued to ${loanData.recipientName} (${loanData.recipientCompany})`,
-      source: 'Screen'
-    });
-
-    return loanNum;
-  },
-
-  returnLoanLine: (params) => {
-    const state = get();
-    const loan = state.visitorLoans.find(l => l.id === params.loanId);
-    if (!loan) return { success: false, error: 'Loan record not found.' };
-
-    const line = loan.items.find(i => i.id === params.lineId);
-    if (!line) return { success: false, error: 'Loan line item not found.' };
-
-    const loc = state.locations.find(l => l.id === line.fromLocationId);
-    const site = loc ? loc.site : 'Cairo Site';
-
-    let targetLocationId: string | undefined;
-
-    if (params.condition === 'good') {
-      const usedLoc = state.locations.find(l => l.site === site && l.stockCondition === 'Used' && l.active);
-      if (!usedLoc) return { success: false, error: `No active Used location found at site "${site}".` };
-      targetLocationId = usedLoc.id;
-    } else if (params.condition === 'damaged') {
-      const scrapLoc = state.locations.find(l => l.site === site && l.stockCondition === 'Scrap' && l.active);
-      if (!scrapLoc) return { success: false, error: `No active Scrap location found at site "${site}". Damaged item cannot be returned until Scrap location exists.` };
-      targetLocationId = scrapLoc.id;
+    // Deduct from scrap location
+    const scrapBalIdx = newBalances.findIndex(b => b.ppeItemId === scrap.ppeItemId && b.locationId === scrap.locationId);
+    if (scrapBalIdx >= 0) {
+      newBalances[scrapBalIdx] = { ...newBalances[scrapBalIdx], quantityOnHand: Math.max(0, newBalances[scrapBalIdx].quantityOnHand - scrap.quantity) };
     }
 
-    // Add back to inventory
-    let updatedBatches = [...state.batches];
-    if (targetLocationId && params.condition !== 'lost') {
-      const isScrap = params.condition === 'damaged';
-      updatedBatches.push({
-        id: `bat-loan-ret-${Date.now()}`,
-        batchNumber: line.batchNumber,
-        ppeItemId: line.ppeItemId,
-        locationId: targetLocationId,
-        variantKey: line.variantKey,
-        quantity: params.returnedQuantity,
-        availableQty: isScrap ? 0 : params.returnedQuantity,
-        quarantinedQty: 0,
-        condition: isScrap ? 'Scrapped' : 'Reused',
-        status: isScrap ? 'Depleted' : 'Active',
-        createdAt: new Date().toISOString()
-      });
+    // Add back to Used location
+    const usedBalIdx = newBalances.findIndex(b => b.ppeItemId === scrap.ppeItemId && b.locationId === usedLoc.id);
+    if (usedBalIdx >= 0) {
+      newBalances[usedBalIdx] = { ...newBalances[usedBalIdx], quantityOnHand: newBalances[usedBalIdx].quantityOnHand + scrap.quantity };
+    } else {
+      newBalances.push({ id: generateId(), ppeItemId: scrap.ppeItemId, locationId: usedLoc.id, quantityOnHand: scrap.quantity, quarantinedOnHand: 0 });
     }
 
-    // Update line item in loan
-    const updatedItems = loan.items.map(item => {
-      if (item.id === params.lineId) {
-        const newRet = item.returnedQuantity + params.returnedQuantity;
-        const isClosed = newRet >= item.quantity;
-        return {
-          ...item,
-          returnedQuantity: newRet,
-          conditionOnReturn: params.condition,
-          status: isClosed ? (params.condition === 'damaged' ? 'Damaged' as const : params.condition === 'lost' ? 'Lost' as const : 'Returned' as const) : 'Open' as const
-        };
-      }
-      return item;
-    });
-
-    const allLinesClosed = updatedItems.every(i => i.status !== 'Open');
-    const updatedStatus = allLinesClosed ? 'Closed' : 'Partially Returned';
-
-    const updatedLoans = state.visitorLoans.map(l => l.id === params.loanId ? {
-      ...l,
-      items: updatedItems,
-      status: updatedStatus as any
-    } : l);
-
-    set({ visitorLoans: updatedLoans, batches: updatedBatches });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Loan',
-      objectReference: loan.loanNumber,
-      action: 'LOAN_ITEM_RETURNED',
-      beforeValues: { returnedQuantity: line.returnedQuantity },
-      afterValues: { returnedQuantity: line.returnedQuantity + params.returnedQuantity, condition: params.condition, loanStatus: updatedStatus },
-      reason: `Loan return: ${params.condition}`,
-      source: 'Screen'
-    });
-
-    return { success: true };
-  },
-
-  updateSettings: (newSettings, reason) => {
-    const state = get();
-    const oldSettings = state.settings;
-    const merged = { ...oldSettings, ...newSettings };
-
-    set({ settings: merged });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Settings',
-      objectReference: 'MODULE_CONFIG',
-      action: 'SETTINGS_UPDATED',
-      beforeValues: oldSettings,
-      afterValues: merged,
-      reason,
-      source: 'Screen'
-    });
-  },
-
-  updateStoreKeeperAssignments: (storeKeeperId, locationIds) => {
-    const state = get();
-    const keeper = state.employees.find(e => e.id === storeKeeperId);
-    const oldAssignments = state.locations.filter(l => l.assignedStoreKeeperIds.includes(storeKeeperId)).map(l => l.code);
-
-    const updatedLocations = state.locations.map(loc => {
-      const hasKeeper = loc.assignedStoreKeeperIds.includes(storeKeeperId);
-      const shouldHave = locationIds.includes(loc.id);
-
-      if (hasKeeper && !shouldHave) {
-        return { ...loc, assignedStoreKeeperIds: loc.assignedStoreKeeperIds.filter(id => id !== storeKeeperId) };
-      } else if (!hasKeeper && shouldHave) {
-        return { ...loc, assignedStoreKeeperIds: [...loc.assignedStoreKeeperIds, storeKeeperId] };
-      }
-      return loc;
-    });
-
-    const newAssignments = updatedLocations.filter(l => l.assignedStoreKeeperIds.includes(storeKeeperId)).map(l => l.code);
-
-    set({ locations: updatedLocations });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'StoreKeeperAssignment',
-      objectReference: keeper?.name || storeKeeperId,
-      action: 'STORE_KEEPER_LOCATIONS_UPDATED',
-      beforeValues: { assignedLocations: oldAssignments },
-      afterValues: { assignedLocations: newAssignments },
-      reason: `Updated location access assignments for ${keeper?.name}`,
-      source: 'Screen'
-    });
-  },
-
-  importHistoricalIssuances: (rows: Array<{
-    employeeId: string;
-    itemCode: string;
-    variantKey?: string;
-    quantity: number;
-    issueDate: string;
-    locationId?: string;
-  }>) => {
-    const state = get();
-    const batchId = `IMP-BATCH-${Date.now()}`;
-    const newIssuances: Issuance[] = [];
-
-    rows.forEach(row => {
-      const ppe = state.ppeItems.find(p => p.itemCode.toLowerCase() === row.itemCode.toLowerCase());
-      if (!ppe) return;
-
-      const issueD = new Date(row.issueDate);
-      let replD = new Date(issueD);
-      if (ppe.lifespanUnit === 'Days') replD.setDate(replD.getDate() + ppe.lifespanValue);
-      else if (ppe.lifespanUnit === 'Months') replD.setMonth(replD.getMonth() + ppe.lifespanValue);
-      else if (ppe.lifespanUnit === 'Years') replD.setFullYear(replD.getFullYear() + ppe.lifespanValue);
-
-      const ref = `ISS-IMP-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
-
-      newIssuances.push({
-        id: `iss-imp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        reference: ref,
-        employeeId: row.employeeId,
-        ppeItemId: ppe.id,
-        locationId: row.locationId || (ppe.locationIds?.[0] || state.locations[0]?.id),
-        quantity: row.quantity,
-        variantKey: row.variantKey || 'Standard',
-        conditionAtIssue: 'New',
-        issueDate: row.issueDate,
-        expectedReplacementDate: replD.toISOString().split('T')[0],
-        status: 'issued',
-        isImported: true,
-        issuedBy: `Import (${state.currentUser.name})`,
-        createdAt: new Date().toISOString()
-      });
-    });
-
-    set({ issuances: [...state.issuances, ...newIssuances] });
-
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Issuance',
-      objectReference: batchId,
-      action: 'HISTORICAL_ISSUANCES_IMPORTED',
-      beforeValues: null,
-      afterValues: { importedRows: newIssuances.length, batchId },
-      reason: `Historical issuances imported via Excel (${newIssuances.length} records)`,
-      source: 'Import'
-    });
-
-    return { importedCount: newIssuances.length, batchId };
-  },
-
-  reverseScrap: (scrapId, reason) => {
-    const state = get();
-    const entry = state.scrapEntries.find(s => s.id === scrapId);
-    if (!entry || entry.reversed) return;
-
     set({
-      scrapEntries: state.scrapEntries.map(s => s.id === scrapId ? {
+      scrapEntries: state.scrapEntries.map(s => s.id === id ? {
         ...s,
         reversed: true,
-        reversedBy: state.currentUser.name,
-        reversedAt: new Date().toISOString(),
-        reversalReason: reason
-      } : s)
+        reversalReason: reason,
+        reversedBy,
+        reversedAt: new Date().toISOString()
+      } : s),
+      stockBalances: newBalances
     });
 
-    state.writeAuditLog({
-      user: state.currentUser.name,
-      role: state.currentUser.role,
-      objectType: 'Stock',
-      objectReference: scrapId,
-      action: 'SCRAP_REVERSED',
-      beforeValues: { reversed: false },
-      afterValues: { reversed: true, reversalReason: reason },
-      reason,
-      source: 'Screen'
+    get().recordAudit({
+      action: 'REVERSE_SCRAP',
+      objectType: 'ScrapEntry',
+      objectReference: id,
+      details: `Reversed scrap entry: ${reason}`,
+      performedBy: reversedBy,
+      reason
     });
+  },
+
+  // Employee Lifecycle (G12)
+  setEmployeeStatus: (employeeId, status, byId) => {
+    const state = get();
+    const emp = state.employees.find(e => e.id === employeeId);
+    if (!emp) return;
+
+    set({
+      employees: state.employees.map(e => e.id === employeeId ? {
+        ...e,
+        status,
+        active: status === 'Active'
+      } : e)
+    });
+
+    get().recordAudit({
+      action: `EMPLOYEE_LIFECYCLE_${status.toUpperCase()}`,
+      objectType: 'Employee',
+      objectReference: emp.employeeCode,
+      details: `Status set to ${status}`,
+      performedBy: byId
+    });
+  },
+
+  // Historical Import (PPE-044) - Zero Stock Deduction
+  importHistoricalIssuances: (imported, byId) => {
+    const newIssuances: Issuance[] = imported.map(item => ({
+      id: generateId(),
+      reference: item.reference || `HIST-${Date.now().toString().slice(-6)}`,
+      employeeId: item.employeeId,
+      ppeItemId: item.ppeItemId,
+      locationId: item.locationId || get().locations[0]?.id || 'loc-1',
+      quantity: item.quantity || 1,
+      batchNumber: item.batchNumber || 'HISTORICAL',
+      issueDate: item.issueDate || new Date().toISOString(),
+      expectedReplacementDate: item.expectedReplacementDate,
+      status: item.status || 'issued',
+      isHistorical: true,
+      issuedBy: byId
+    }));
+
+    set((state) => ({
+      issuances: [...newIssuances, ...state.issuances]
+    }));
+
+    get().recordAudit({
+      action: 'HISTORICAL_IMPORT',
+      objectType: 'Issuance',
+      objectReference: `Batch of ${newIssuances.length}`,
+      details: `Imported ${newIssuances.length} historical issuance records with zero stock deduction`,
+      performedBy: byId
+    });
+
+    return { count: newIssuances.length };
+  },
+
+  // Module Settings (PPE-050)
+  updateModuleSettings: (settings) => {
+    set((state) => {
+      const merged = { ...state.moduleSettings, ...settings };
+      return { moduleSettings: merged, expirySettings: merged };
+    });
+    get().recordAudit({
+      action: 'UPDATE_MODULE_SETTINGS',
+      objectType: 'Settings',
+      objectReference: 'GLOBAL',
+      after: settings
+    });
+  },
+
+  updateExpirySettings: (settings) => {
+    get().updateModuleSettings(settings);
   }
 }));
 

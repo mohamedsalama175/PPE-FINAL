@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
 import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
@@ -11,562 +10,380 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { EmptyState } from '../components/ui/EmptyState';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { Modal } from '../components/ui/Modal';
-import { SignaturePad } from '../components/ui/SignaturePad';
-import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
+import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
-import { 
-  ShieldAlert, Plus, CornerDownLeft, Eye, RotateCcw, 
-  CheckCircle2, Clock, AlertTriangle, User, AlertOctagon,
-  FileText, ArrowRight, ShieldCheck
-} from 'lucide-react';
-import { format } from 'date-fns';
+import { ShieldAlert, Plus, CornerDownLeft, X, Clock, AlertTriangle } from 'lucide-react';
+import { format, differenceInDays } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
 import { Issuance } from '../types';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: boolean }) {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
+  const { issuances, ppeItems, employees, currentUser, returnItem, serialUnits, units } = usePPEStore();
+  const [returnSerialIds, setReturnSerialIds] = React.useState<string[]>([]);
+  const symOf = (ppeItemId?: string) => units.find(u => u.id === ppeItems.find(p => p.id === ppeItemId)?.unitId)?.symbol || '';
   const addToast = useToastStore(s => s.addToast);
 
-  const { 
-    issuances, 
-    ppeItems, 
-    employees, 
-    locations, 
-    currentUser, 
-    returnPPE, 
-    kits 
-  } = usePPEStore();
+  const [search, setSearch] = React.useState('');
+  const [statusFilter, setStatusFilter] = React.useState(openLoansOnly ? 'issued' : 'all');
+
+  const [returnModal, setReturnModal] = React.useState<{ isOpen: boolean; issuanceId: string | null; maxQty: number }>({ isOpen: false, issuanceId: null, maxQty: 1 });
+  const [returnQty, setReturnQty] = React.useState(1);
+  const [returnCondition, setReturnCondition] = React.useState<'good' | 'damaged' | 'worn_out' | 'lost'>('good');
+  const [physicalReceipt, setPhysicalReceipt] = React.useState(true);
+  const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
+  const [employeeSignature, setEmployeeSignature] = React.useState('');
+  const [activeSigner, setActiveSigner] = React.useState<'storeKeeper' | 'employee' | null>(null);
 
   const isStoreKeeper = currentUser.role === 'Store Keeper';
-  const assignedLocations = React.useMemo(() => {
-    if (currentUser.role === 'Admin' || currentUser.role === 'HSE Supervisor') {
-      return locations.filter(l => l.active && !l.deletedAt);
-    }
-    return locations.filter(l => l.active && !l.deletedAt && l.assignedStoreKeeperIds.includes(currentUser.id));
-  }, [locations, currentUser]);
-
-  const isBlockedKeeper = isStoreKeeper && assignedLocations.length === 0;
-
-  const [search, setSearch] = React.useState('');
-  const [statusFilter, setStatusFilter] = React.useState('all');
-  const [locationFilter, setLocationFilter] = React.useState('all');
-
-  // Detail Drawer state
-  const [selectedIssuance, setSelectedIssuance] = React.useState<Issuance | null>(null);
-
-  // Return Modal State (BD-I472)
-  const [returnModal, setReturnModal] = React.useState<{
-    isOpen: boolean;
-    issuance: Issuance | null;
-    quantity: number;
-    condition: 'good' | 'damaged' | 'worn_out' | 'lost';
-    physicalReceiptConfirmed: boolean;
-    storeKeeperSignature: string;
-    receiverSignature: string;
-    submitting: boolean;
-    error?: string;
-  }>({
-    isOpen: false,
-    issuance: null,
-    quantity: 1,
-    condition: 'good',
-    physicalReceiptConfirmed: true,
-    storeKeeperSignature: '',
-    receiverSignature: '',
-    submitting: false
-  });
+  const myLocations = React.useMemo(() => {
+    return isStoreKeeper ? usePPEStore.getState().locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)).map(l => l.id) : [];
+  }, [currentUser.id, isStoreKeeper]);
 
   const filteredIssuances = React.useMemo(() => {
-    return issuances
-      .filter(i => {
-        if (isStoreKeeper && !assignedLocations.some(l => l.id === i.locationId)) return false;
-        if (statusFilter !== 'all' && i.status !== statusFilter) return false;
-        if (locationFilter !== 'all' && i.locationId !== locationFilter) return false;
+    return issuances.filter(i => {
+      if (openLoansOnly) {
+        if (!i.expectedReturnDate && !i.isLoan) return false;
+        if (i.status !== 'issued') return false;
+      }
+      if (isStoreKeeper && !myLocations.includes(i.locationId)) return false;
+      if (statusFilter !== 'all' && i.status !== statusFilter) return false;
 
-        if (search.trim()) {
-          const q = search.toLowerCase();
-          const emp = employees.find(e => e.id === i.employeeId);
-          const ppe = ppeItems.find(p => p.id === i.ppeItemId);
-          const matchEmp = emp?.name.toLowerCase().includes(q) || emp?.employeeCode.toLowerCase().includes(q);
-          const matchItem = ppe?.nameEn.toLowerCase().includes(q) || ppe?.itemCode.toLowerCase().includes(q);
-          const matchRef = i.reference.toLowerCase().includes(q);
-          if (!matchEmp && !matchItem && !matchRef) return false;
-        }
+      if (search) {
+        const q = search.toLowerCase();
+        const targetName = i.employeeId
+          ? employees.find(e => e.id === i.employeeId)?.name?.toLowerCase()
+          : i.holderName?.toLowerCase();
+        const refMatch = (i.reference || i.id).toLowerCase().includes(q);
+        const compMatch = (i.companyName || '').toLowerCase().includes(q);
 
-        return true;
-      })
-      .sort((a, b) => new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime());
-  }, [issuances, isStoreKeeper, assignedLocations, statusFilter, locationFilter, search, employees, ppeItems]);
+        return targetName?.includes(q) || refMatch || compMatch;
+      }
+      return true;
+    }).sort((a, b) => new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime());
+  }, [issuances, openLoansOnly, isStoreKeeper, myLocations, statusFilter, search, employees]);
 
-  const handleOpenReturnModal = (i: Issuance) => {
-    setReturnModal({
-      isOpen: true,
-      issuance: i,
-      quantity: i.quantity,
-      condition: 'good',
-      physicalReceiptConfirmed: true,
-      storeKeeperSignature: '',
-      receiverSignature: '',
-      submitting: false,
-      error: undefined
-    });
-  };
+  const handleReturnSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returnModal.issuanceId) return;
 
-  const handleConfirmReturn = () => {
-    if (!returnModal.issuance) return;
-
-    if ((returnModal.condition === 'damaged' || returnModal.condition === 'worn_out') && !returnModal.physicalReceiptConfirmed) {
-      setReturnModal(prev => ({
-        ...prev,
-        error: 'Physical receipt must be confirmed when returning damaged or worn out equipment.'
-      }));
+    if ((returnCondition === 'damaged' || returnCondition === 'worn_out') && !physicalReceipt) {
+      addToast('Physical receipt must be confirmed for damaged or worn out items (PPE-038).', 'error');
       return;
     }
 
-    if (!returnModal.storeKeeperSignature || !returnModal.receiverSignature) {
-      setReturnModal(prev => ({
-        ...prev,
-        error: 'Dual digital signatures (Store Keeper & Employee) are mandatory for returns.'
-      }));
+    const target = issuances.find(i => i.id === returnModal.issuanceId);
+    const tracked = !!target?.serialIds?.length;
+    if (tracked && returnSerialIds.length === 0) {
+      addToast('Pick or scan the returned serial numbers.', 'error');
       return;
     }
 
-    setReturnModal(prev => ({ ...prev, submitting: true, error: undefined }));
-
-    const res = returnPPE({
-      issuanceId: returnModal.issuance.id,
-      quantity: returnModal.quantity,
-      condition: returnModal.condition,
-      physicalReceiptConfirmed: returnModal.physicalReceiptConfirmed,
-      storeKeeperSignature: returnModal.storeKeeperSignature,
-      receiverSignature: returnModal.receiverSignature
-    });
-
-    setReturnModal(prev => ({ ...prev, submitting: false }));
-
-    if (!res.success) {
-      setReturnModal(prev => ({ ...prev, error: res.error }));
-      addToast(res.error || 'Return failed', 'error');
-    } else {
-      addToast('Return and routing processed successfully.', 'success');
-      setReturnModal({
-        isOpen: false,
-        issuance: null,
-        quantity: 1,
-        condition: 'good',
-        physicalReceiptConfirmed: true,
-        storeKeeperSignature: '',
-        receiverSignature: '',
-        submitting: false
-      });
-      setSelectedIssuance(null);
-    }
-  };
-
-  if (isBlockedKeeper) {
-    return (
-      <ContainerCard className="p-8 text-center space-y-4 border-red-200 ">
-        <AlertOctagon className="w-12 h-12 text-red-600 mx-auto" />
-        <h2 className="text-base font-bold text-slate-900 ">Access Restricted</h2>
-        <p className="text-xs text-slate-600 max-w-md mx-auto">
-          In accordance with rule BD-I462, store keepers with zero assigned warehouses are blocked from issuing or returning PPE.
-        </p>
-      </ContainerCard>
+    const res = returnItem(
+      returnModal.issuanceId,
+      returnCondition,
+      returnCondition === 'lost' ? false : physicalReceipt,
+      currentUser.id,
+      {
+        quantity: tracked ? returnSerialIds.length : returnQty,
+        storeKeeperSignature,
+        employeeSignature,
+        serialIds: tracked ? returnSerialIds : undefined
+      }
     );
-  }
+    if (!res.success) {
+      addToast(res.message || 'Return failed.', 'error');
+      return;
+    }
+    addToast('Return processed successfully (stock condition routed per Rule G6).', 'success');
+    setReturnModal({ isOpen: false, issuanceId: null, maxQty: 1 });
+  };
 
   return (
-    <div className="space-y-4">
+    <div>
       <PageHeader
-        title={t('issuance')}
-        subtitle="Manage individual and kit employee issuances, returns, auto-scrapping, and dual signatures (BD-I467, BD-I468, BD-I472)"
-        action={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => navigate('/issuances/replacements-due')}>
-              <Clock className="w-4 h-4 me-1.5 text-amber-600" /> Replacements Due
+        title={openLoansOnly ? "Open Loans & Temporary Custody (PPE-041)" : t('issuance')}
+        subtitle={openLoansOnly ? "Track active equipment loaned to visitors, contractors, and temporary personnel with overdue monitoring" : "Full record of issued, returned, and scrapped safety equipment"}
+        actions={
+          openLoansOnly ? (
+            <Button onClick={() => navigate('/issuances/new-loan')}>
+              <Plus className="w-4 h-4 mr-2" /> Issue New Loan
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => navigate('/issuances/open-loans')}>
-              <CornerDownLeft className="w-4 h-4 me-1.5 text-blue-600" /> Open Visitor Loans
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => navigate('/issuances/new-kit')}>
-              <Plus className="w-4 h-4 me-1.5" /> Issue Kit
-            </Button>
-            <Button variant="primary" size="sm" onClick={() => navigate('/issuances/new')}>
-              <Plus className="w-4 h-4 me-1.5" /> Issue Single Item
-            </Button>
-          </div>
+          ) : (
+            <div className="relative group">
+              <Button><Plus className="w-4 h-4 mr-2" /> {t('issuePpe')}</Button>
+              <div className="absolute right-0 mt-1 w-52 bg-surface border border-border rounded-md shadow-lg hidden group-hover:block z-10">
+                <div className="py-1">
+                  <button onClick={() => navigate('/issuances/new')} className="block w-full text-left px-4 py-2 text-xs font-semibold text-ink hover:bg-canvas">Issue Single Item</button>
+                  <button onClick={() => navigate('/issuances/new-kit')} className="block w-full text-left px-4 py-2 text-xs font-semibold text-ink hover:bg-canvas">Issue Standard Kit</button>
+                  <button onClick={() => navigate('/issuances/new-loan')} className="block w-full text-left px-4 py-2 text-xs font-semibold text-ink hover:bg-canvas">Issue Temporary Loan</button>
+                </div>
+              </div>
+            </div>
+          )
         }
       />
 
       <FilterBar>
-        <div className="flex flex-wrap items-center gap-3">
-          <SearchInput
-            placeholder="Search employee, item name, code, or ref..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-72 text-xs"
-          />
-
-          <Select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="w-40 text-xs"
-          >
+        <SearchInput
+          placeholder="Search by name, reference, or company..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        {!openLoansOnly && (
+          <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-48">
             <option value="all">All Statuses</option>
-            <option value="issued">Currently Issued</option>
+            <option value="issued">Issued</option>
             <option value="returned">Returned</option>
-            <option value="lost">Lost</option>
+            <option value="scrapped">Scrapped</option>
           </Select>
-
-          <Select
-            value={locationFilter}
-            onChange={e => setLocationFilter(e.target.value)}
-            className="w-48 text-xs"
-          >
-            <option value="all">All Locations</option>
-            {assignedLocations.map(l => (
-              <option key={l.id} value={l.id}>
-                {l.code} — {l.nameEn}
-              </option>
-            ))}
-          </Select>
-        </div>
+        )}
       </FilterBar>
 
-      <ContainerCard noPadding className="overflow-hidden">
-        <DataTable
-          data={filteredIssuances}
-          keyExtractor={i => i.id}
-          emptyState={<EmptyState icon={<ShieldAlert />} title="No issuances found" />}
-          columns={[
-          {
-            key: 'reference',
-            header: 'Reference',
-            render: i => (
-              <div>
-                <span className="font-mono text-xs font-bold text-slate-900">{i.reference}</span>
-                {i.imported && (
-                  <span className="ms-1.5 px-1.5 py-0.2 text-[9px] font-bold rounded bg-slate-100 text-slate-600 border border-slate-200">
-                    Imported
-                  </span>
-                )}
-              </div>
-            )
-          },
-          {
-            key: 'employee',
-            header: 'Employee',
-            render: i => {
+      <DataTable
+        data={filteredIssuances}
+        keyExtractor={(item) => item.id}
+        emptyState={<EmptyState icon={<ShieldAlert />} title={openLoansOnly ? "No open loans currently active" : "No issuances found"} />}
+        columns={[
+          { key: 'ref', header: 'Reference', render: (i) => (
+            <div>
+              <span className="font-mono text-xs font-bold text-ink">{i.reference || i.id}</span>
+              {i.isHistorical && (
+                <span className="ml-1.5 px-1.5 py-0.2 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                  Imported
+                </span>
+              )}
+            </div>
+          )},
+          { key: 'target', header: 'Holder / Recipient', render: (i) => {
+            if (i.employeeId) {
               const emp = employees.find(e => e.id === i.employeeId);
               return (
                 <div>
-                  <div className="font-semibold text-slate-800 text-xs">{emp?.name || 'Unknown'}</div>
-                  <div className="text-[11px] text-slate-500">
-                    {emp?.employeeCode} — {emp?.jobPosition || emp?.jobPositionId}
-                  </div>
+                  <div className="font-semibold text-ink">{emp?.name}</div>
+                  <div className="text-[11px] font-mono text-body">{emp?.employeeCode}</div>
                 </div>
               );
             }
-          },
-          {
-            key: 'item',
-            header: 'PPE Item & Variant',
-            render: i => {
+            return (
+              <div>
+                <div className="font-semibold text-ink">
+                  {i.holderName} <span className="text-[10px] text-accent font-bold">({i.holderType || 'Visitor'})</span>
+                </div>
+                {i.companyName && <div className="text-[11px] text-body">{i.companyName}</div>}
+              </div>
+            );
+          }},
+          { key: 'item', header: 'Equipment / Kit', render: (i) => {
+            if (i.ppeItemId) {
               const ppe = ppeItems.find(p => p.id === i.ppeItemId);
               return (
                 <div>
-                  <div className="font-medium text-slate-800 text-xs">
-                    {ppe ? (language === 'en' ? ppe.nameEn : ppe.nameAr) : i.ppeItemId}
-                  </div>
-                  <div className="text-[11px] text-slate-500 font-mono">
-                    Variant: {i.variantKey || 'Standard'} | Batch: {i.batchNumber}
-                  </div>
+                  <div className="font-medium text-ink">{ppe ? ppe.name : i.ppeItemId}</div>
+                  <div className="text-[11px] text-body font-mono">{ppe?.itemCode} &middot; Qty: {i.quantity} {symOf(i.ppeItemId)}</div>
+                  {!!i.serialIds?.length && (
+                    <div className="text-[10px] font-mono text-accent">{i.serialIds.map(id => serialUnits.find(u => u.id === id)?.serial).filter(Boolean).join(', ')}</div>
+                  )}
                 </div>
               );
             }
-          },
-          {
-            key: 'quantity',
-            header: 'Qty',
-            render: i => <span className="font-mono font-bold text-slate-800">{i.quantity}</span>
-          },
-          {
-            key: 'conditionAtIssue',
-            header: 'Condition',
-            render: i => (
-              <span
-                className={`text-[11px] font-semibold ${
-                  i.conditionAtIssue === 'Reused' ? 'text-amber-700' : 'text-emerald-700'
-                }`}
-              >
-                {i.conditionAtIssue || 'New'}
-              </span>
-            )
-          },
-          {
-            key: 'dates',
-            header: 'Issue / Replacement',
-            render: i => (
-              <div className="text-xs">
-                <div>{format(new Date(i.issueDate), 'MMM d, yyyy')}</div>
-                <div className="text-[10px] text-slate-500">
-                  Repl: {i.expectedReplacementDate ? format(new Date(i.expectedReplacementDate), 'MMM d, yyyy') : '-'}
+            if (i.kitId) {
+              const kit = usePPEStore.getState().kits?.find(k => k.id === i.kitId);
+              return (
+                <div>
+                  <div className="font-medium text-ink">{kit ? kit.name : 'Job Kit'}</div>
+                  <div className="text-[11px] text-accent font-semibold">Standardized Kit (Qty: {i.quantity})</div>
                 </div>
-              </div>
-            )
-          },
-          {
-            key: 'status',
-            header: 'Status',
-            render: i => (
-              <StatusBadge
-                status={i.status === 'issued' ? 'info' : i.status === 'returned' ? 'success' : 'neutral'}
-                label={i.status === 'issued' ? 'Currently Held' : i.status}
-              />
-            )
-          },
-          {
-            key: 'actions',
-            header: '',
-            className: 'text-end',
-            render: i => (
-              <div className="flex justify-end gap-1.5">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedIssuance(i)}
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                </Button>
+              );
+            }
+            return 'Equipment';
+          }},
+          { key: 'issueDate', header: 'Issued Date', render: (i) => format(new Date(i.issueDate), 'yyyy-MM-dd') },
+          { key: 'dueDate', header: openLoansOnly ? 'Expected Return (PPE-041)' : 'Due / Return Date', render: (i) => {
+            const d = i.expectedReturnDate || i.expectedReplacementDate;
+            if (!d) return '-';
+            const isOverdue = new Date(d) < new Date() && i.status === 'issued';
+            const daysDiff = differenceInDays(new Date(d), new Date());
 
-                {i.status === 'issued' && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => handleOpenReturnModal(i)}
-                  >
-                    <CornerDownLeft className="w-3.5 h-3.5 me-1" /> Return
-                  </Button>
+            return (
+              <div>
+                <span className={`font-mono text-xs font-semibold ${isOverdue ? 'text-safety-red font-bold' : ''}`}>
+                  {format(new Date(d), 'yyyy-MM-dd')}
+                </span>
+                {isOverdue && (
+                  <span className="block text-[10px] font-bold text-safety-red uppercase">
+                    {Math.abs(daysDiff)} days overdue!
+                  </span>
                 )}
               </div>
-            )
-          }
+            );
+          }},
+          { key: 'status', header: 'Status', render: (i) => {
+            const d = i.expectedReturnDate || i.expectedReplacementDate;
+            const isOverdue = d && new Date(d) < new Date() && i.status === 'issued';
+            return (
+              <StatusBadge
+                status={isOverdue ? 'error' : i.status === 'issued' ? 'info' : 'success'}
+                label={isOverdue ? 'Overdue' : i.status}
+              />
+            );
+          }},
+          { key: 'actions', header: '', className: 'text-right w-28', render: (i) => {
+            if ((i.status === 'issued' || i.status === 'partially_returned') && !i.isLoan && ['Admin', 'HSE Supervisor', 'Direct Supervisor', 'Store Keeper'].includes(currentUser.role)) {
+              return (
+                <Button variant="secondary" size="sm" onClick={() => {
+                  setReturnModal({ isOpen: true, issuanceId: i.id, maxQty: i.quantity });
+                  setReturnQty(i.quantity);
+                  setReturnCondition('good');
+                  setPhysicalReceipt(true);
+                  setStoreKeeperSignature('');
+                  setEmployeeSignature('');
+                  setReturnSerialIds([]);
+                }}>
+                  <CornerDownLeft className="w-3 h-3 mr-1" /> Return
+                </Button>
+              );
+            }
+            return null;
+          }}
         ]}
       />
-      </ContainerCard>
 
-      {/* Issuance Detail Drawer */}
-      <SlideOverDrawer
-        isOpen={!!selectedIssuance}
-        onClose={() => setSelectedIssuance(null)}
-        title={selectedIssuance ? `Issuance ${selectedIssuance.reference}` : 'Issuance Details'}
-      >
-        {selectedIssuance && (
-          <div className="space-y-6 text-xs">
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Reference:</span>
-                <span className="font-mono font-bold text-slate-900">{selectedIssuance.reference}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Status:</span>
-                <span className="font-semibold capitalize text-slate-800">{selectedIssuance.status}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Employee:</span>
-                <span className="font-medium text-slate-800">
-                  {employees.find(e => e.id === selectedIssuance.employeeId)?.name}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Issuing Location:</span>
-                <span className="text-slate-800">
-                  {locations.find(l => l.id === selectedIssuance.locationId)?.nameEn}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Issue Date:</span>
-                <span className="text-slate-800">{format(new Date(selectedIssuance.issueDate), 'PP')}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Expected Replacement:</span>
-                <span className="font-bold text-slate-900">
-                  {selectedIssuance.expectedReplacementDate ? format(new Date(selectedIssuance.expectedReplacementDate), 'PP') : 'N/A'}
-                </span>
-              </div>
+      {/* Return Modal with Condition Routing & Dual Signatures (PPE-038) */}
+      {returnModal.isOpen && (
+        <div className="fixed inset-0 bg-ink/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface rounded-lg shadow-2xl w-full max-w-lg overflow-hidden border border-border flex flex-col">
+            <div className="flex justify-between items-center p-4 border-b border-border bg-canvas">
+              <h3 className="font-bold text-ink text-sm">Return PPE Equipment (PPE-038 & Rule G6)</h3>
+              <button onClick={() => setReturnModal({ isOpen: false, issuanceId: null, maxQty: 1 })} className="text-body hover:text-ink">
+                <X className="w-5 h-5" />
+              </button>
             </div>
-
-            {/* Embedded Signatures */}
-            <div className="space-y-2 border-t border-slate-100 pt-4">
-              <h4 className="font-bold text-slate-900 text-xs">Digital Signatures</h4>
-              {selectedIssuance.imported || selectedIssuance.isImported ? (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded text-slate-500 text-center">
-                  Imported Historical Record (No signatures captured)
+            <form onSubmit={handleReturnSubmit} className="p-5 flex-1 overflow-auto space-y-4">
+              {(() => {
+                const iss = issuances.find(x => x.id === returnModal.issuanceId);
+                if (!iss?.serialIds?.length) return null;
+                // PPE-058: pick or scan from the serials this person holds on this issuance
+                const held = serialUnits.filter(u => iss.serialIds!.includes(u.id) && !iss.returnedSerialIds?.includes(u.id) && u.status === 'Issued' && u.holderIssuanceId === iss.id);
+                return (
+                  <SerialPicker ppeItemId={iss.ppeItemId!} candidates={held} value={returnSerialIds} onChange={setReturnSerialIds} label="Returned serial numbers *" />
+                );
+              })()}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {!issuances.find(x => x.id === returnModal.issuanceId)?.serialIds?.length && (
+                <div>
+                  <label className="block text-xs font-bold text-body uppercase tracking-wider mb-1">
+                    Quantity Returned *
+                  </label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max={returnModal.maxQty}
+                    value={returnQty}
+                    onChange={(e) => setReturnQty(Math.max(1, Math.min(returnModal.maxQty, parseInt(e.target.value, 10) || 1)))}
+                    required
+                  />
+                  <span className="text-[10px] text-body">Max: {returnModal.maxQty} issued</span>
                 </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="p-2 border border-slate-200 rounded text-center">
-                    <span className="text-[10px] text-slate-500 block mb-1">Store Keeper</span>
-                    {selectedIssuance.storeKeeperSignature ? (
-                      <img
-                        src={selectedIssuance.storeKeeperSignature}
-                        alt="Store Keeper Signature"
-                        className="h-10 mx-auto object-contain"
-                      />
-                    ) : (
-                      <span className="text-[10px] text-slate-400">No signature</span>
-                    )}
-                  </div>
-                  <div className="p-2 border border-slate-200 rounded text-center">
-                    <span className="text-[10px] text-slate-500 block mb-1">Employee</span>
-                    {selectedIssuance.receiverSignature ? (
-                      <img
-                        src={selectedIssuance.receiverSignature}
-                        alt="Employee Signature"
-                        className="h-10 mx-auto object-contain"
-                      />
-                    ) : (
-                      <span className="text-[10px] text-slate-400">No signature</span>
-                    )}
-                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-body uppercase tracking-wider mb-1">
+                    Condition Upon Return *
+                  </label>
+                  <Select value={returnCondition} onChange={(e) => setReturnCondition(e.target.value as any)}>
+                    <option value="good">Good (Routes to Used Store)</option>
+                    <option value="damaged">Damaged (Routes to Scrap)</option>
+                    <option value="worn_out">Worn Out (Routes to Scrap)</option>
+                    <option value="lost">Lost (No stock returned)</option>
+                  </Select>
+                </div>
+              </div>
+
+              {returnCondition === 'good' && (
+                <p className="text-[11px] text-safety-green font-medium bg-green-50 p-2 rounded border border-green-200">
+                  Good Condition: Returned stock will be routed to the Used Equipment location (Rule G6).
+                </p>
+              )}
+              {(returnCondition === 'damaged' || returnCondition === 'worn_out') && (
+                <p className="text-[11px] text-safety-red font-medium bg-red-50 p-2 rounded border border-red-200">
+                  Damaged/Worn Out: Item will be auto-scrapped and routed to the Scrap location (Rule G6 & PPE-038).
+                </p>
+              )}
+              {returnCondition === 'lost' && (
+                <p className="text-[11px] text-safety-amber-signal font-medium bg-amber-50 p-2 rounded border border-amber-200">
+                  Lost Item: Marked as lost; voucher closed with no inventory restored.
+                </p>
+              )}
+
+              {returnCondition !== 'lost' && (
+                <div className="pt-1">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={physicalReceipt}
+                      onChange={(e) => setPhysicalReceipt(e.target.checked)}
+                      className="rounded border-border w-4 h-4 text-accent"
+                    />
+                    <span className="text-xs text-ink font-semibold">I have physically verified and received the item back *</span>
+                  </label>
                 </div>
               )}
-            </div>
-          </div>
-        )}
-      </SlideOverDrawer>
 
-      {/* Return Item & Auto-Scrap Modal (BD-I472) */}
-      <Modal
-        opened={returnModal.isOpen && !!returnModal.issuance}
-        onClose={() => setReturnModal({
-          isOpen: false,
-          issuance: null,
-          quantity: 1,
-          condition: 'good',
-          physicalReceiptConfirmed: true,
-          storeKeeperSignature: '',
-          receiverSignature: '',
-          submitting: false
-        })}
-        title="Return PPE Item (BD-I472)"
-        subtitle={returnModal.issuance?.reference}
-        icon={<CornerDownLeft className="w-5 h-5 text-blue-600" />}
-        size="lg"
-        footer={
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => setReturnModal({
-                isOpen: false,
-                issuance: null,
-                quantity: 1,
-                condition: 'good',
-                physicalReceiptConfirmed: true,
-                storeKeeperSignature: '',
-                receiverSignature: '',
-                submitting: false
-              })}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              onClick={handleConfirmReturn}
-              disabled={returnModal.submitting}
-            >
-              Complete Return
-            </Button>
-          </div>
-        }
-      >
-        {returnModal.issuance && (
-          <div className="text-xs space-y-4">
-            {returnModal.error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-800 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-                <span>{returnModal.error}</span>
-              </div>
-            )}
+              {/* Dual Signatures Pad (PPE-038) */}
+              <div className="pt-2 border-t border-border">
+                <div className="text-xs font-bold text-body uppercase tracking-wider mb-2">Dual Return Signatures (PPE-038)</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="border border-border rounded p-2.5 bg-canvas flex flex-col items-center justify-center min-h-[90px]">
+                    <span className="text-[10px] font-bold uppercase text-body mb-1.5">Employee Signature</span>
+                    {employeeSignature ? (
+                      <img src={employeeSignature} alt="Employee" className="h-8 max-w-[120px] bg-white border border-border rounded" />
+                    ) : (
+                      <Button type="button" size="sm" variant="secondary" onClick={() => setActiveSigner('employee')}>
+                        Sign (Employee)
+                      </Button>
+                    )}
+                  </div>
 
-            <div>
-              <span className="text-slate-500 ">Item:</span>{' '}
-              <span className="font-bold text-slate-800 ">
-                {ppeItems.find(p => p.id === returnModal.issuance?.ppeItemId)?.nameEn} ({returnModal.issuance.variantKey})
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Quantity Returned</label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={returnModal.issuance.quantity}
-                  value={returnModal.quantity}
-                  onChange={e => setReturnModal(prev => ({ ...prev, quantity: parseInt(e.target.value) || 1 }))}
-                  required
-                />
-                <span className="text-[10px] text-slate-400 ">Max held: {returnModal.issuance.quantity}</span>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Condition on Return</label>
-                <Select
-                  value={returnModal.condition}
-                  onChange={e => setReturnModal(prev => ({ ...prev, condition: e.target.value as any }))}
-                >
-                  <option value="good">Good (Reusable to Used Pool)</option>
-                  <option value="damaged">Damaged (Auto-Scrap to Scrap Yard)</option>
-                  <option value="worn_out">Worn Out (Auto-Scrap to Scrap Yard)</option>
-                  <option value="lost">Lost (Write-Off, No Stock Move)</option>
-                </Select>
-              </div>
-            </div>
-
-            {(returnModal.condition === 'damaged' || returnModal.condition === 'worn_out') && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded space-y-2">
-                <div className="text-red-800 font-semibold">
-                  Automatic Scrap Routing:
+                  <div className="border border-border rounded p-2.5 bg-canvas flex flex-col items-center justify-center min-h-[90px]">
+                    <span className="text-[10px] font-bold uppercase text-body mb-1.5">Store Keeper Signature</span>
+                    {storeKeeperSignature ? (
+                      <img src={storeKeeperSignature} alt="Store Keeper" className="h-8 max-w-[120px] bg-white border border-border rounded" />
+                    ) : (
+                      <Button type="button" size="sm" variant="secondary" onClick={() => setActiveSigner('storeKeeper')}>
+                        Sign (Store Keeper)
+                      </Button>
+                    )}
+                  </div>
                 </div>
-                <p className="text-[11px] text-red-700 ">
-                  Damaged items route strictly to the Scrap location of the issuing site. If the site has no Scrap location, this return will be blocked.
-                </p>
-                <label className="flex items-center gap-2 cursor-pointer pt-1 font-semibold text-red-900 ">
-                  <input
-                    type="checkbox"
-                    checked={returnModal.physicalReceiptConfirmed}
-                    onChange={e => setReturnModal(prev => ({ ...prev, physicalReceiptConfirmed: e.target.checked }))}
-                    className="rounded text-red-600"
-                  />
-                  I confirm physical receipt of the damaged equipment
-                </label>
               </div>
-            )}
 
-            {/* Dual Canvas Signatures (Rule 2) */}
-            <div className="space-y-3 pt-2 border-t border-slate-100 ">
-              <label className="block font-bold text-slate-900 uppercase tracking-wider text-[11px]">
-                Dual Digital Signatures for Return (Mandatory)
-              </label>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <SignaturePad
-                  label={`Store Keeper: ${currentUser.name}`}
-                  onSave={sig => setReturnModal(prev => ({ ...prev, storeKeeperSignature: sig }))}
-                  required
-                />
-                <SignaturePad
-                  label={`Returning Employee: ${employees.find(e => e.id === returnModal.issuance?.employeeId)?.name}`}
-                  onSave={sig => setReturnModal(prev => ({ ...prev, receiverSignature: sig }))}
-                  required
-                />
+              <div className="pt-4 flex justify-end gap-2 border-t border-border">
+                <Button type="button" variant="ghost" size="sm" onClick={() => setReturnModal({ isOpen: false, issuanceId: null, maxQty: 1 })}>
+                  Cancel
+                </Button>
+                <Button type="submit" size="sm" disabled={(returnCondition === 'damaged' || returnCondition === 'worn_out') && !physicalReceipt}>
+                  Complete Return
+                </Button>
               </div>
-            </div>
+            </form>
           </div>
-        )}
-      </Modal>
+        </div>
+      )}
+
+      {/* Signature Capture Modal */}
+      <SignatureModal
+        isOpen={!!activeSigner}
+        title={activeSigner === 'employee' ? 'Employee Return Signature' : 'Store Keeper Return Signature'}
+        onClose={() => setActiveSigner(null)}
+        onSave={(dataUrl) => {
+          if (activeSigner === 'employee') setEmployeeSignature(dataUrl);
+          else setStoreKeeperSignature(dataUrl);
+          setActiveSigner(null);
+        }}
+      />
     </div>
   );
 }

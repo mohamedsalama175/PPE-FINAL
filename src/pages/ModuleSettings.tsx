@@ -1,226 +1,184 @@
 import * as React from 'react';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
-import { Button } from '../components/ui/Button';
+import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Input } from '../components/ui/Input';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { useSwal } from '../lib/useSwal';
-import { 
-  Settings, Clock, Trash2, ShieldAlert, CheckCircle2, 
-  MapPin, AlertTriangle, Save, RefreshCw, Calendar 
-} from 'lucide-react';
-import { ModuleSettings } from '../types';
+import { Button } from '../components/ui/Button';
+import { useToastStore } from '../store/toastStore';
+import { Settings, Shield, Clock, Trash2, MapPin, Check } from 'lucide-react';
+import { ModuleSettings as IModuleSettings } from '../types';
 
-export default function ModuleSettingsPage() {
-  const { t, language } = useTranslation();
-  const { showToast } = useSwal();
-  const { settings, updateSettings, currentUser, locations } = usePPEStore();
+export default function ModuleSettings() {
+  const { moduleSettings, updateModuleSettings, locations } = usePPEStore();
+  const addToast = useToastStore(s => s.addToast);
 
-  const isAdmin = currentUser.role === 'Admin';
+  const [settings, setSettings] = React.useState<IModuleSettings>(moduleSettings);
+  const [newSite, setNewSite] = React.useState('');
+  const [newSiteDays, setNewSiteDays] = React.useState(30);
 
-  const [formSettings, setFormSettings] = React.useState<ModuleSettings>(settings);
-  const [changeReason, setChangeReason] = React.useState('');
+  const handleSave = () => {
+    updateModuleSettings(settings);
+    addToast('Module settings saved successfully (PPE-050).', 'success');
+  };
 
-  React.useEffect(() => {
-    setFormSettings(settings);
-  }, [settings]);
-
-  // Extract all sites from locations
-  const sites = React.useMemo(() => {
-    const set = new Set<string>(['Main Campus', 'Cairo Site', 'Alexandria Site']);
-    locations.forEach(l => { if (l.site) set.add(l.site); });
-    return Array.from(set).sort();
-  }, [locations]);
-
-  const handleLeadTimeChange = (site: string, value: number) => {
-    const clamped = Math.max(1, Math.min(90, value || 1));
-    setFormSettings(prev => ({
+  const updateCategoryOverride = (cat: 'I' | 'II' | 'III', val: string) => {
+    const num = parseInt(val, 10) || 0;
+    setSettings(prev => ({
       ...prev,
-      reminderLeadTimePerSite: {
-        ...prev.reminderLeadTimePerSite,
-        [site]: clamped
-      }
+      categoryOverrides: prev.categoryOverrides.map(o => o.riskCategory === cat ? { ...o, leadTimeDays: num } : o)
     }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (formSettings.trashRetentionDays < 30) {
-      showToast('Trash retention period must be at least 30 days.', 'error');
+  const handleAddSiteOverride = () => {
+    if (!newSite) return;
+    if (settings.siteLeadTimes?.some(s => s.site === newSite)) {
+      addToast('Override for this site already exists.', 'error');
       return;
     }
-
-    if (formSettings.recentIssuanceWindowDays < 1) {
-      showToast('Recent issuance window must be at least 1 day.', 'error');
-      return;
-    }
-
-    const reason = changeReason.trim() || 'Module configuration updated by Administrator';
-    updateSettings(formSettings, reason);
-    showToast('Module settings saved and applied immediately.', 'success');
-    setChangeReason('');
+    setSettings(prev => ({
+      ...prev,
+      siteLeadTimes: [...(prev.siteLeadTimes || []), { site: newSite, leadTimeDays: newSiteDays }]
+    }));
+    setNewSite('');
   };
 
+  const handleRemoveSiteOverride = (site: string) => {
+    setSettings(prev => ({
+      ...prev,
+      siteLeadTimes: (prev.siteLeadTimes || []).filter(s => s.site !== site)
+    }));
+  };
+
+  const uniqueSites = Array.from(new Set(locations.map(l => l.site).filter(Boolean)));
+
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <PageHeader
-        title="Module Settings (NEW-06)"
-        subtitle="Configure per-site reminder lead times, job kit issuance protection window, and trash retention periods"
+    <div className="max-w-3xl space-y-6 pb-20">
+      <PageHeader 
+        title="Module Settings & Governance (PPE-050)" 
+        subtitle="Global lead times, site overrides, alert thresholds, and data retention"
+        actions={
+          <Button onClick={handleSave}>
+            <Check className="w-4 h-4 mr-2" /> Save All Settings
+          </Button>
+        }
       />
 
-      {!isAdmin && (
-        <div className="p-4 bg-amber-50 border border-amber-200 rounded-md flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-          <div className="text-xs text-amber-800 ">
-            <span className="font-bold">Admin Permission Notice:</span> You are viewing the module configuration in read-only mode. Only users with the <span className="font-semibold">Admin</span> role can save changes.
-          </div>
-        </div>
-      )}
+      <div className="bg-surface border border-border rounded-lg px-6 py-3 divide-y divide-border">
+        {/* General Expiry Lead Time */}
+        <FormSection 
+          title="General Expiry & Replacement Lead Times" 
+          description="Default days before equipment lifespan ends to trigger reminders and appearance on Replacements Due."
+        >
+          <FormGroup label="Default Lead Time (Days)">
+            <Input 
+              type="number" 
+              value={settings.generalLeadTimeDays} 
+              onChange={e => setSettings({...settings, generalLeadTimeDays: parseInt(e.target.value, 10) || 0})}
+              className="w-36"
+            />
+          </FormGroup>
+        </FormSection>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Section 1: Reminder Lead Time per Site */}
-        <ContainerCard className="p-6 space-y-4">
-          <div className="border-b border-slate-100 pb-3">
-            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-primary" />
-              1. Reminder Lead Time per Site (Days)
-            </h3>
-            <p className="text-xs text-slate-500 ">
-              Configures how many days before an item's Expected Replacement Date the nightly reminder is triggered and appears as 'Upcoming' in Replacements Due (allowed: 1–90 days).
-            </p>
-          </div>
-
-          <div className="border border-slate-200 rounded-lg overflow-hidden">
-            <table className="w-full text-xs text-start">
-              <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200 ">
-                <tr>
-                  <th className="p-3">Operating Site</th>
-                  <th className="p-3 w-48">Lead Time (1–90 Days)</th>
-                  <th className="p-3">Status / Notes</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 ">
-                {sites.map(site => {
-                  const currentVal = formSettings.reminderLeadTimePerSite[site] ?? 14;
-                  return (
-                    <tr key={site} className="hover:bg-slate-50 ">
-                      <td className="p-3 font-semibold text-slate-800 flex items-center gap-2">
-                        <MapPin className="w-3.5 h-3.5 text-slate-400 " />
-                        {site}
-                      </td>
-                      <td className="p-3">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            min={1}
-                            max={90}
-                            value={currentVal}
-                            onChange={e => handleLeadTimeChange(site, parseInt(e.target.value) || 14)}
-                            disabled={!isAdmin}
-                            className="w-24 font-mono font-bold text-slate-800 "
-                          />
-                          <span className="text-slate-500 text-xs">days</span>
-                        </div>
-                      </td>
-                      <td className="p-3 text-[11px] text-slate-500 ">
-                        Reminders fire {currentVal} day(s) prior to expiry
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </ContainerCard>
-
-        {/* Section 2: Recent Issuance Window & Trash Retention */}
-        <ContainerCard className="p-6 space-y-4">
-          <div className="border-b border-slate-100 pb-3">
-            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-emerald-600 " />
-              2. Kit Protection & Trash Retention Windows
-            </h3>
-            <p className="text-xs text-slate-500 ">
-              System governance parameters enforcing sole active kit protection and trash auto-purge countdowns.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
-              <label className="block text-xs font-bold text-slate-800 ">
-                'Recent Issuance' Window (Days)
-              </label>
-              <p className="text-[11px] text-slate-500 leading-relaxed">
-                Used by Rule 3: Deactivating, trashing, or reassigning the sole active Kit for a position that had issuances within this window requires Admin Override with a logged reason.
-              </p>
-              <div className="flex items-center gap-2 pt-1">
-                <Input
-                  type="number"
-                  min={1}
-                  value={formSettings.recentIssuanceWindowDays}
-                  onChange={e => setFormSettings(prev => ({ ...prev, recentIssuanceWindowDays: parseInt(e.target.value) || 90 }))}
-                  disabled={!isAdmin}
-                  className="w-28 font-mono font-bold text-slate-800 "
-                />
-                <span className="text-xs text-slate-600 ">days (Default: 90)</span>
+        {/* Risk Category Overrides */}
+        <FormSection 
+          title="Risk Category Overrides" 
+          description="Specific advance notice lead times based on PPE risk classification (Cat I / Cat II / Cat III)."
+        >
+          <div className="grid grid-cols-3 gap-4">
+            {settings.categoryOverrides?.map(override => (
+              <div key={override.riskCategory}>
+                <FormGroup label={`Category ${override.riskCategory} Lead Time (Days)`}>
+                  <Input 
+                    type="number" 
+                    value={override.leadTimeDays} 
+                    onChange={e => updateCategoryOverride(override.riskCategory, e.target.value)}
+                  />
+                </FormGroup>
               </div>
-            </div>
-
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
-              <label className="block text-xs font-bold text-slate-800 ">
-                Trash Retention Period (Days)
-              </label>
-              <p className="text-[11px] text-slate-500 leading-relaxed">
-                Records in Trash Bin without historical transactions count down from this value before automatic purge (Minimum: 30 days, Default: 90 days).
-              </p>
-              <div className="flex items-center gap-2 pt-1">
-                <Input
-                  type="number"
-                  min={30}
-                  value={formSettings.trashRetentionDays}
-                  onChange={e => setFormSettings(prev => ({ ...prev, trashRetentionDays: parseInt(e.target.value) || 90 }))}
-                  disabled={!isAdmin}
-                  className="w-28 font-mono font-bold text-slate-800 "
-                />
-                <span className="text-xs text-slate-600 ">days (Min: 30)</span>
-              </div>
-            </div>
+            ))}
           </div>
+        </FormSection>
 
-          {isAdmin && (
-            <div className="pt-3 border-t border-slate-100 ">
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Reason for Configuration Change (Logged to Immutable Audit Log)
-              </label>
-              <Input
-                placeholder="e.g. Standardized Alexandria Site lead times to 21 days for logistics..."
-                value={changeReason}
-                onChange={e => setChangeReason(e.target.value)}
+        {/* Per-Site Lead Time Overrides */}
+        <FormSection 
+          title="Per-Site Lead Time Overrides" 
+          description="Custom lead times for remote or offshore sites where delivery logistics require longer lead times."
+        >
+          <div className="space-y-3">
+            {settings.siteLeadTimes && settings.siteLeadTimes.length > 0 ? (
+              <div className="divide-y divide-border border border-border rounded">
+                {settings.siteLeadTimes.map(s => (
+                  <div key={s.site} className="p-3 flex justify-between items-center text-xs bg-canvas/40">
+                    <div>
+                      <span className="font-semibold text-ink">{s.site}</span>
+                      <span className="text-body ml-2">({s.leadTimeDays} days lead time)</span>
+                    </div>
+                    <Button 
+                      size="sm" 
+                      variant="ghost" 
+                      className="text-safety-red h-7"
+                      onClick={() => handleRemoveSiteOverride(s.site)}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-body italic">No site-specific lead times configured. General lead time applies.</p>
+            )}
+
+            <div className="flex items-center gap-3 mt-3">
+              <select 
+                value={newSite} 
+                onChange={e => setNewSite(e.target.value)}
+                className="text-xs p-2 rounded border border-border bg-surface w-48"
+              >
+                <option value="">Select Site...</option>
+                {uniqueSites.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <Input 
+                type="number" 
+                placeholder="Days" 
+                value={newSiteDays} 
+                onChange={e => setNewSiteDays(parseInt(e.target.value, 10) || 30)}
+                className="w-24"
               />
+              <Button size="sm" variant="secondary" onClick={handleAddSiteOverride} disabled={!newSite}>
+                Add Site Override
+              </Button>
             </div>
-          )}
-
-          <div className="flex justify-end gap-3 pt-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setFormSettings(settings)}
-              disabled={!isAdmin}
-            >
-              Reset Changes
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={!isAdmin}
-            >
-              <Save className="w-4 h-4 me-1.5" /> Save Configuration
-            </Button>
           </div>
-        </ContainerCard>
-      </form>
+        </FormSection>
+
+        {/* 90-Day Recent Issuance Window & Trash Retention */}
+        <FormSection 
+          title="Operational Windows & Retention Policy (G10)" 
+          description="Configure the threshold for recent issuances and the retention auto-purge duration in the Trash Bin."
+        >
+          <div className="grid grid-cols-2 gap-4">
+            <FormGroup label="Recent Issuance Alert Window (Days)">
+              <Input 
+                type="number" 
+                value={settings.recentIssuanceWindowDays} 
+                onChange={e => setSettings({...settings, recentIssuanceWindowDays: parseInt(e.target.value, 10) || 90})}
+              />
+            </FormGroup>
+
+            <FormGroup label="Trash Retention Purge Window (Days)">
+              <Input 
+                type="number" 
+                value={settings.trashRetentionDays} 
+                onChange={e => setSettings({...settings, trashRetentionDays: parseInt(e.target.value, 10) || 90})}
+              />
+            </FormGroup>
+          </div>
+          <p className="text-[11px] text-body mt-2">
+            Per Rule G10, records with historical transactions are protected indefinitely (<span className="font-semibold text-ink">Retained - has history</span>) regardless of the purge window.
+          </p>
+        </FormSection>
+      </div>
     </div>
   );
 }
+

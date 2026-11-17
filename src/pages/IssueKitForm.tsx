@@ -1,418 +1,318 @@
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
-import { Button } from '../components/ui/Button';
+import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Select } from '../components/ui/Select';
 import { Input } from '../components/ui/Input';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { SignaturePad } from '../components/ui/SignaturePad';
+import { Button } from '../components/ui/Button';
+import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
-import { 
-  Package, User, CheckCircle2, AlertTriangle, AlertCircle, 
-  RotateCcw, Info, Check, X, ShieldAlert, Sparkles, AlertOctagon 
-} from 'lucide-react';
-import { Kit, Employee, PPEItem } from '../types';
+import { useTranslation } from '../i18n/useTranslation';
+import { Briefcase, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function IssueKitForm() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const preselectedKitId = searchParams.get('kitId');
   const { t, language } = useTranslation();
+  const { kits, ppeItems, locations, employees, currentUser, issueKit, stockBalances, issuances, batches, units, inStockSerials, serialUnits } = usePPEStore();
+  // PPE-058: serials per tracked kit item, one per unit
+  const [itemSerials, setItemSerials] = React.useState<Record<string, string[]>>({});
   const addToast = useToastStore(s => s.addToast);
 
-  const { 
-    kits, 
-    ppeItems, 
-    locations, 
-    employees, 
-    currentUser, 
-    batches, 
-    issuances, 
-    issueKitPPE,
-    itemGroups,
-    attributes
-  } = usePPEStore();
-
   const isStoreKeeper = currentUser.role === 'Store Keeper';
-  const assignedLocations = React.useMemo(() => {
-    if (currentUser.role === 'Admin' || currentUser.role === 'HSE Supervisor') {
-      return locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap');
-    }
-    return locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap' && l.assignedStoreKeeperIds.includes(currentUser.id));
-  }, [locations, currentUser]);
+  const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
 
-  const isBlockedKeeper = isStoreKeeper && assignedLocations.length === 0;
-
-  const [locationId, setLocationId] = React.useState(assignedLocations[0]?.id || '');
   const [employeeId, setEmployeeId] = React.useState(employees[0]?.id || '');
-  const [kitId, setKitId] = React.useState('');
+  const [kitId, setKitId] = React.useState(preselectedKitId || kits[0]?.id || '');
+  const [locationId, setLocationId] = React.useState(myLocations[0]?.id || '');
+  const [quantity, setQuantity] = React.useState(1);
 
+  // Digital signatures state
+  const [receiverSignature, setReceiverSignature] = React.useState('');
+  const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
+  const [activeSigner, setActiveSigner] = React.useState<'receiver' | 'storeKeeper' | null>(null);
+
+  // Selected employee
   const selectedEmployee = React.useMemo(() => employees.find(e => e.id === employeeId), [employees, employeeId]);
-  const selectedLoc = React.useMemo(() => locations.find(l => l.id === locationId), [locations, locationId]);
 
-  // Auto-suggest Kits matching Employee Job Position (BD-I468)
-  const suggestedKits = React.useMemo(() => {
-    if (!selectedEmployee) return [];
-    const activeKits = kits.filter(k => k.active && !k.deletedAt);
-    const empPos = (selectedEmployee.jobPosition || selectedEmployee.jobPositionId || '').toLowerCase();
-    return activeKits.filter(k => (k.jobPosition || k.jobPositionId || '').toLowerCase() === empPos);
-  }, [kits, selectedEmployee]);
-
-  const otherKits = React.useMemo(() => {
-    return kits.filter(k => k.active && !k.deletedAt && !suggestedKits.some(sk => sk.id === k.id));
-  }, [kits, suggestedKits]);
-
-  // Auto-select first suggested kit when employee changes
+  // PPE-035: Auto-suggest kit based on selected employee's Job Position
   React.useEffect(() => {
-    if (suggestedKits.length > 0) {
-      setKitId(suggestedKits[0].id);
-    } else if (kits.length > 0 && !kitId) {
-      setKitId(kits[0].id);
+    if (preselectedKitId) return; // Prioritize URL param if explicitly navigated
+    if (!selectedEmployee) return;
+
+    const matchedKit = kits.find(k => k.jobPositionId === selectedEmployee.jobPositionId && k.active && !k.deletedAt);
+    if (matchedKit) {
+      setKitId(matchedKit.id);
     }
-  }, [suggestedKits]);
+  }, [selectedEmployee, kits, preselectedKitId]);
 
   const selectedKit = React.useMemo(() => kits.find(k => k.id === kitId), [kits, kitId]);
 
-  // Customizable line items for this specific kit issuance
-  const [lines, setLines] = React.useState<Array<{
-    ppeItemId: string;
-    variantKey: string;
-    quantity: number;
-    skip: boolean;
-  }>>([]);
+  // Items status check for G8 partial issuance
+  const kitItemsStockStatus = React.useMemo(() => {
+    if (!selectedKit) return [];
+    return selectedKit.items.map(ki => {
+      const item = ppeItems.find(p => p.id === ki.ppeItemId);
+      const reqQty = ki.qty * quantity;
+      const bal = stockBalances.find(b => b.ppeItemId === ki.ppeItemId && b.locationId === locationId);
+      const avail = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
+      const isAvailable = avail >= reqQty;
+      const isPartial = avail > 0 && avail < reqQty;
+      const isOut = avail === 0;
 
-  // Populate lines when kit or employee changes
-  React.useEffect(() => {
-    if (!selectedKit) {
-      setLines([]);
-      return;
-    }
+      // Suggest size from past issuances
+      const pastIssuance = issuances.find(i => i.employeeId === employeeId && i.ppeItemId === ki.ppeItemId && i.variantKey);
+      const suggestedSize = pastIssuance?.variantKey || ki.variantKey || '';
 
-    const kitLines = (selectedKit.lineItems || selectedKit.items || []) as any[];
-    const initLines = kitLines.map(item => {
-      const ppe = ppeItems.find(p => p.id === item.ppeItemId);
-      // Look up employee's last received size for this item
- const lastReceived = selectedEmployee?.lastReceivedSizes?.[item.ppeItemId]?.rawKey;
- const defaultVariant = typeof item.defaultVariant === 'string' ? item.defaultVariant : 'Standard';
-
- return {
- ppeItemId: item.ppeItemId,
- variantKey: lastReceived || defaultVariant,
- quantity: item.quantity || item.qty || 1,
- skip: false
- };
- });
-
- setLines(initLines);
- }, [selectedKit, selectedEmployee, ppeItems]);
-
- // Dual signatures
- const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
- const [receiverSignature, setReceiverSignature] = React.useState('');
- const [submitting, setSubmitting] = React.useState(false);
- const [completedSummary, setCompletedSummary] = React.useState<{ issued: number; skipped: number } | null>(null);
-
- // Stock availability check per line
- const lineStockStatuses = React.useMemo(() => {
- if (!locationId) return {};
-
- const statuses: Record<string, { available: number; isOutOfStock: boolean; heldIssuance: any }> = {};
-
- lines.forEach(l => {
- const totalAvail = batches
- .filter(b => b.ppeItemId === l.ppeItemId && b.locationId === locationId && b.status === 'Active')
- .reduce((sum, b) => sum + b.availableQty, 0);
-
- const held = issuances.find(i => i.employeeId === employeeId && i.ppeItemId === l.ppeItemId && i.status === 'issued');
-
- statuses[l.ppeItemId] = {
- available: totalAvail,
- isOutOfStock: totalAvail < l.quantity,
- heldIssuance: held
- };
- });
-
- return statuses;
- }, [lines, batches, locationId, employeeId, issuances]);
-
- const handleSubmit = (e: React.FormEvent) => {
- e.preventDefault();
- if (!selectedKit) return;
-
- if (!storeKeeperSignature || !receiverSignature) {
- addToast('Dual digital signatures (Store Keeper & Employee) are strictly mandatory.', 'error');
- return;
- }
-
- const activeLinesToIssue = lines.filter(l => !l.skip);
- if (activeLinesToIssue.length === 0) {
- addToast('All lines are marked as skipped. Nothing to issue.', 'error');
-      return;
-    }
-
-    setSubmitting(true);
-    const result = issueKitPPE({
-      employeeId,
-      kitId: selectedKit.id,
-      locationId,
-      lines: activeLinesToIssue,
-      storeKeeperSignature,
-      receiverSignature
+      return {
+        ki,
+        item,
+        reqQty,
+        avail,
+        isAvailable,
+        isPartial,
+        isOut,
+        suggestedSize
+      };
     });
-    setSubmitting(false);
+  }, [selectedKit, quantity, locationId, stockBalances, issuances, employeeId, ppeItems]);
 
-    setCompletedSummary({ issued: result.issuedCount, skipped: result.skippedCount });
-    addToast(`Kit issuance completed: ${result.issuedCount} items issued, ${result.skippedCount} skipped due to stock.`, 'success');
+  React.useEffect(() => { setItemSerials({}); }, [kitId, locationId, quantity]);
+  const sym = (unitId?: string) => units.find(u => u.id === unitId)?.symbol || '';
+  // A tracked line needs one serial per unit it will issue (partial when stock is short, Rule G8).
+  const serialNeeds = kitItemsStockStatus
+    .filter(k => k.item?.serialTracked)
+    .map(k => ({ ...k, needed: Math.min(k.reqQty, inStockSerials(k.ki.ppeItemId, locationId).length) }));
+  const serialsMissing = serialNeeds.find(n => (itemSerials[n.ki.ppeItemId] || []).length !== n.needed);
+
+  const hasAnyStock = kitItemsStockStatus.some(k => k.avail > 0);
+  const isPartiallyAvailable = kitItemsStockStatus.some(k => k.isOut || k.isPartial);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!hasAnyStock) {
+      addToast('Cannot issue kit: all items are currently out of stock at this location.', 'error');
+      return;
+    }
+    if (serialsMissing) {
+      addToast(`${serialsMissing.item?.itemCode}: pick ${serialsMissing.needed} serial number(s), one per unit.`, 'error');
+      return;
+    }
+    if (!receiverSignature || !storeKeeperSignature) {
+      addToast('Both digital signatures (Store Keeper & Receiver) are required (Rule G7).', 'error');
+      return;
+    }
+
+    const res = issueKit({
+      employeeId,
+      kitId,
+      locationId,
+      quantity,
+      itemSerials,
+      storeKeeperSignature,
+      receiverSignature,
+      issuedBy: currentUser.id
+    });
+
+    if (res.success) {
+      addToast(`Kit successfully issued (${res.issuanceIds.length} items processed per Rule G8).`, 'success');
+      navigate('/issuances');
+    } else {
+      addToast(res.message || 'Error issuing kit.', 'error');
+    }
   };
 
-  if (isBlockedKeeper) {
-    return (
-      <ContainerCard className="p-8 text-center space-y-4 border-red-200 ">
-        <AlertOctagon className="w-12 h-12 text-red-600 mx-auto" />
-        <h2 className="text-base font-bold text-slate-900 ">Access Restricted</h2>
-        <p className="text-xs text-slate-600 max-w-md mx-auto">
-          In accordance with rule BD-I462, store keepers with zero assigned warehouses are blocked from kit issuances.
-        </p>
-      </ContainerCard>
-    );
-  }
-
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-3xl space-y-6 pb-20">
       <PageHeader
-        title="Issue Job-Specific Kit"
-        subtitle="Auto-suggest kits by Job Position, prefill saved sizes, skip out-of-stock items, and capture dual canvas signatures (BD-I468)"
+        title="Issue Standardized Job Kit (PPE-035)"
+        subtitle="Bundled issuance with auto-suggestion by position and partial stock fulfillment (Rule G8)"
+        onBack={() => navigate('/issuances')}
       />
 
-      {completedSummary ? (
-        <ContainerCard className="p-8 text-center space-y-4">
-          <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
-          <h3 className="text-base font-bold text-slate-900 ">Kit Issuance Completed</h3>
-          <p className="text-xs text-slate-600 max-w-md mx-auto">
-            Successfully created individual issuance tracking records for <span className="font-bold text-emerald-700 ">{completedSummary.issued} items</span>.
-            {completedSummary.skipped > 0 && (
-              <span className="block mt-1 text-slate-500 ">
-                {completedSummary.skipped} item(s) were out of stock and skipped without creating an open sub-request.
-              </span>
-            )}
-          </p>
-          <div className="flex justify-center gap-3 pt-2">
-            <Button variant="secondary" onClick={() => setCompletedSummary(null)}>
-              Issue Another Kit
-            </Button>
-            <Button variant="primary" onClick={() => navigate('/issuances')}>
-              View Issuances List
-            </Button>
-          </div>
-        </ContainerCard>
-      ) : (
-        <ContainerCard className="p-6">
-          <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Issuing Location <span className="text-red-500">*</span>
-              </label>
-              <Select value={locationId} onChange={e => setLocationId(e.target.value)} required>
-                {assignedLocations.map(l => (
-                  <option key={l.id} value={l.id}>
-                    {l.code} — {l.nameEn} ({l.stockCondition})
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <FormSection title="Recipient & Kit Selection">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormGroup label="Employee">
+              <Select value={employeeId} onChange={e => setEmployeeId(e.target.value)}>
+                {employees.filter(e => e.active).map(emp => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.employeeCode})
                   </option>
                 ))}
               </Select>
-            </div>
+            </FormGroup>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Recipient Employee <span className="text-red-500">*</span>
-              </label>
-              <Select value={employeeId} onChange={e => setEmployeeId(e.target.value)} required>
-                {employees
-                  .filter(e => e.status === 'Active')
-                  .map(e => (
-                    <option key={e.id} value={e.id}>
-                      {e.name} — {e.jobPosition || e.jobPositionId} ({e.site})
-                    </option>
-                  ))}
+            <FormGroup label="Location">
+              <Select value={locationId} onChange={e => setLocationId(e.target.value)}>
+                {myLocations.map(l => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
               </Select>
-            </div>
+            </FormGroup>
           </div>
 
-          {/* Kit Selector with Auto-Suggestion */}
-          <div className="p-4 bg-slate-50 border border-slate-200 rounded-md space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-amber-500" />
-                Select Job Kit (Position: {selectedEmployee?.jobPosition || selectedEmployee?.jobPositionId})
-              </label>
-              {suggestedKits.length > 0 && (
-                <span className="text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                  {suggestedKits.length} suggested kit(s) for this position
-                </span>
-              )}
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <FormGroup label="Standard Kit">
+              <Select value={kitId} onChange={e => setKitId(e.target.value)}>
+                {kits.filter(k => k.active && !k.deletedAt).map(k => (
+                  <option key={k.id} value={k.id}>
+                    {k.name}
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
 
-            <Select value={kitId} onChange={e => setKitId(e.target.value)} required>
-              {suggestedKits.length > 0 && (
-                <optgroup label="⭐ Suggested for this Employee Position">
-                  {suggestedKits.map(k => (
-                    <option key={k.id} value={k.id}>
-                      {language === 'en' ? k.nameEn : k.nameAr} ({(k.lineItems || k.items || []).length} items)
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {otherKits.length > 0 && (
-                <optgroup label="Other Active Kits">
-                  {otherKits.map(k => (
-                    <option key={k.id} value={k.id}>
-                      {language === 'en' ? k.nameEn : k.nameAr} — Position: {k.jobPosition || k.jobPositionId}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </Select>
+            <FormGroup label="Kit Multiplier (Quantity)">
+              <Input
+                type="number"
+                min="1"
+                value={quantity}
+                onChange={e => setQuantity(parseInt(e.target.value, 10) || 1)}
+              />
+            </FormGroup>
           </div>
+        </FormSection>
 
-          {/* Line Items Grid with Out-of-Stock and Already-Held Flags */}
-          {selectedKit && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                  Kit Line Items ({lines.length})
-                </h4>
-                <span className="text-[11px] text-slate-500">
-                  Sizes prefilled from employee profile; out-of-stock items will be skipped automatically.
-                </span>
-              </div>
-
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <table className="w-full text-xs text-start">
-                  <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
-                    <tr>
-                      <th className="p-3">Item</th>
-                      <th className="p-3">Variant / Size</th>
-                      <th className="p-3 w-20 text-center">Qty</th>
-                      <th className="p-3">Stock & Held Status</th>
-                      <th className="p-3 w-24 text-end">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {lines.map((line, idx) => {
-                      const ppe = ppeItems.find(p => p.id === line.ppeItemId);
-                      const status = lineStockStatuses[line.ppeItemId];
-                      const isOos = status?.isOutOfStock;
-                      const held = status?.heldIssuance;
-
-                      return (
-                        <tr
-                          key={line.ppeItemId}
-                          className={`hover:bg-slate-50 ${line.skip ? 'opacity-50 bg-slate-50' : ''}`}
-                        >
-                          <td className="p-3">
-                            <div className="font-semibold text-slate-800">
-                              {ppe ? (language === 'en' ? ppe.nameEn : ppe.nameAr) : line.ppeItemId}
-                            </div>
-                            <div className="text-[11px] text-slate-400 font-mono">{ppe?.itemCode}</div>
-                          </td>
-
-                          <td className="p-3">
-                            <Input
-                              value={line.variantKey}
-                              onChange={e => {
-                                const val = e.target.value;
-                                setLines(prev => prev.map((l, i) => i === idx ? { ...l, variantKey: val } : l));
-                              }}
-                              disabled={line.skip}
-                              className="text-xs"
-                              placeholder="e.g. Size L"
-                            />
-                          </td>
-
-                          <td className="p-3 text-center font-mono font-bold text-slate-800">
-                            {line.quantity}
-                          </td>
-
-                          <td className="p-3">
-                            {isOos ? (
-                              <div className="flex items-center gap-1.5 text-red-600 text-[11px] font-semibold">
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                                <span>Out of stock (Avail: {status?.available || 0}) — Will be skipped</span>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-1.5 text-emerald-700 text-[11px]">
-                                <Check className="w-3.5 h-3.5" />
-                                <span>In stock ({status?.available} avail)</span>
-                              </div>
-                            )}
-
-                            {held && (
-                              <div className="text-[10px] text-amber-700 mt-0.5">
-                                Held, replacement due on {held.expectedReplacementDate || 'N/A'}
-                              </div>
-                            )}
-                          </td>
-
-                          <td className="p-3 text-end">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setLines(prev => prev.map((l, i) => i === idx ? { ...l, skip: !l.skip } : l));
-                              }}
-                              className={`text-[11px] font-semibold px-2 py-1 rounded border ${
-                                line.skip
-                                  ? 'bg-slate-200 text-slate-700 border-slate-300'
-                                  : 'bg-white text-slate-700 hover:text-red-600 border-slate-200'
-                              }`}
-                            >
-                              {line.skip ? 'Include' : 'Skip Line'}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+        {/* Kit Items Stock Status (Rule G8 Partial Fulfillment) */}
+        <FormSection
+          title="Kit Items Stock Status & Fulfillment (Rule G8)"
+          description="If an item is out of stock, Rule G8 allows partial fulfillment without creating an open backorder."
+        >
+          {isPartiallyAvailable && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-safety-amber-signal font-medium mb-3 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>Some items have limited stock. Partial issuance will proceed for available items only (Rule G8).</span>
             </div>
           )}
 
-          {/* Dual Canvas Signatures (Rule 2) */}
-          <div className="border-t border-slate-100 pt-4 space-y-4">
-            <div>
-              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                Dual Digital Signatures (One pair for complete Kit)
-              </h4>
-              <p className="text-[11px] text-slate-500">
-                A single pair of signatures validates the Kit issuance while generating itemized historical records.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <SignaturePad
-                label={`Store Keeper: ${currentUser.name}`}
-                onSave={setStoreKeeperSignature}
-                required
-              />
-              <SignaturePad
-                label={`Recipient Employee: ${selectedEmployee?.name || 'Employee'}`}
-                onSave={setReceiverSignature}
-                required
-              />
-            </div>
+          <div className="border border-border rounded overflow-hidden">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-canvas border-b border-border text-body uppercase font-bold">
+                <tr>
+                  <th className="p-2.5">Item</th>
+                  <th className="p-2.5 text-center">Req Qty</th>
+                  <th className="p-2.5 text-center">Available</th>
+                  <th className="p-2.5 text-right">Fulfillment Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {kitItemsStockStatus.map(({ ki, item, reqQty, avail, isAvailable, isPartial, isOut }) => (
+                  <tr key={ki.id} className="hover:bg-canvas/40">
+                    <td className="p-2.5">
+                      <div className="font-semibold text-ink">{item ? item.name : ki.ppeItemId}</div>
+                      <div className="text-[10px] text-body font-mono">{item?.itemCode}</div>
+                    </td>
+                    <td className="p-2.5 text-center font-bold">{reqQty} {sym(item?.unitId)}</td>
+                    <td className="p-2.5 text-center font-bold font-mono">
+                      <span className={avail > 0 ? 'text-safety-green' : 'text-safety-red'}>{avail} {sym(item?.unitId)}</span>
+                    </td>
+                    <td className="p-2.5 text-right font-medium">
+                      {isAvailable ? (
+                        <span className="text-safety-green font-bold">✓ Full Stock</span>
+                      ) : isPartial ? (
+                        <span className="text-safety-amber-signal font-bold">Partial ({avail}/{reqQty})</span>
+                      ) : (
+                        <span className="text-safety-red font-bold">Out of Stock (Skipped)</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
 
-          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 ">
-            <Button type="button" variant="secondary" onClick={() => navigate('/issuances')}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" disabled={submitting}>
-              Issue Kit Now
-            </Button>
+          {/* PPE-058: one serial per unit for each tracked kit line */}
+          {serialNeeds.filter(n => n.needed > 0).map(n => (
+            <div key={n.ki.id} className="mt-3">
+              <SerialPicker
+                ppeItemId={n.ki.ppeItemId}
+                locationId={locationId}
+                value={itemSerials[n.ki.ppeItemId] || []}
+                onChange={ids => setItemSerials(prev => ({ ...prev, [n.ki.ppeItemId]: ids }))}
+                required={n.needed}
+                label={`${n.item?.itemCode} - ${n.item?.name}`}
+              />
+            </div>
+          ))}
+        </FormSection>
+
+        {/* Digital Signatures (Rule G7: single pair covers entire kit) */}
+        <FormSection
+          title="Dual Digital Signatures (Rule G7)"
+          description="A single pair of captured signatures covers the entire kit issuance."
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {/* Receiver Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Receiver Signature</div>
+              {receiverSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveSigner('receiver')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('receiver')}>
+                  Tap to Sign (Receiver)
+                </Button>
+              )}
+            </div>
+
+            {/* Store Keeper Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Store Keeper Signature</div>
+              {storeKeeperSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveSigner('storeKeeper')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('storeKeeper')}>
+                  Tap to Sign (Store Keeper)
+                </Button>
+              )}
+            </div>
           </div>
-        </form>
-        </ContainerCard>
-      )}
+        </FormSection>
+
+        <div className="pt-4 flex justify-end gap-3 border-t border-border">
+          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!hasAnyStock || !receiverSignature || !storeKeeperSignature}>
+            Complete Kit Issuance
+          </Button>
+        </div>
+      </form>
+
+      {/* Signature Capture Modal */}
+      <SignatureModal
+        isOpen={!!activeSigner}
+        title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
+        onClose={() => setActiveSigner(null)}
+        onSave={(dataUrl) => {
+          if (activeSigner === 'receiver') setReceiverSignature(dataUrl);
+          else setStoreKeeperSignature(dataUrl);
+          setActiveSigner(null);
+        }}
+      />
     </div>
   );
 }

@@ -3,401 +3,281 @@ import { usePPEStore } from '../store/useStore';
 import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
 import { DataTable } from '../components/ui/DataTable';
-import { ContainerCard } from '../components/ui/ContainerCard';
 import { FilterBar } from '../components/ui/FilterBar';
 import { SearchInput } from '../components/ui/SearchInput';
 import { Select } from '../components/ui/Select';
 import { Button } from '../components/ui/Button';
 import { ToggleSwitch } from '../components/ui/ToggleSwitch';
 import { EmptyState } from '../components/ui/EmptyState';
-import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
-import { TableActionsButtons } from '../components/ui/TableActionsButtons';
-import { StatusBadge } from '../components/ui/StatusBadge';
-import { useSwal } from '../lib/useSwal';
-import { 
-  MapPin, Plus, Eye, Edit2, Trash2, AlertOctagon, 
-  Warehouse, ShieldCheck, Lock, AlertTriangle, Users
-} from 'lucide-react';
+import { LocationDetailModal } from '../components/modals/LocationDetailModal';
+import { OverrideModal } from '../components/ui/OverrideModal';
+import { useToastStore } from '../store/toastStore';
+import { MapPin, Plus, Eye, Lock, Unlock } from 'lucide-react';
 import { Location } from '../types';
 import { useNavigate } from 'react-router-dom';
 
 export default function Locations() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { showInfo, showConfirm } = useSwal();
-  const { 
-    locations, 
-    employees, 
-    batches, 
-    ppeItems, 
-    visitorLoans, 
-    saveLocation, 
-    trashLocation, 
-    currentUser 
-  } = usePPEStore();
-
+  const { locations, employees, currentUser, stockBalances, softDeleteEntity, toggleEntityActive, closeOpeningBalance, checkInUse } = usePPEStore();
+  
   const [search, setSearch] = React.useState('');
-  const [siteFilter, setSiteFilter] = React.useState('all');
-  const [conditionFilter, setConditionFilter] = React.useState('all');
-  const [typeFilter, setTypeFilter] = React.useState('all');
-  const [statusFilter, setStatusFilter] = React.useState<'all' | 'active' | 'inactive'>('active');
+  const [siteFilter, setSiteFilter] = React.useState('');
+  const [typeFilter, setTypeFilter] = React.useState('');
+  const [conditionFilter, setConditionFilter] = React.useState('');
+  const [statusFilter, setStatusFilter] = React.useState('all');
+  
+  const [selectedLocation, setSelectedLocation] = React.useState<Location | null>(null);
+  const [overrideTarget, setOverrideTarget] = React.useState<{ location: Location; action: 'delete' | 'deactivate'; reasons: string[] } | null>(null);
 
-  const [selectedLocForDetails, setSelectedLocForDetails] = React.useState<Location | null>(null);
+  const addToast = useToastStore(s => s.addToast);
 
-  // Filter locations
-  const filteredLocations = React.useMemo(() => {
-    return locations.filter(loc => {
-      const matchSearch = loc.code.toLowerCase().includes(search.toLowerCase()) ||
-                          loc.nameEn.toLowerCase().includes(search.toLowerCase()) ||
-                          loc.nameAr.includes(search);
-      const matchSite = siteFilter === 'all' || loc.site === siteFilter;
-      const matchCondition = conditionFilter === 'all' || loc.stockCondition === conditionFilter;
-      const matchType = typeFilter === 'all' || loc.locationType === typeFilter;
-      const matchStatus = statusFilter === 'all' ? true : statusFilter === 'active' ? loc.active : !loc.active;
-      const isNotDeleted = !loc.deletedAt;
+  // Role scoping (PPE-023)
+  const isStoreKeeper = currentUser.role === 'Store Keeper';
+  const myAssignedLocationIds = React.useMemo(() => {
+    return isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)).map(l => l.id) : [];
+  }, [currentUser.id, isStoreKeeper, locations]);
 
-      return matchSearch && matchSite && matchCondition && matchType && matchStatus && isNotDeleted;
+  const filteredItems = React.useMemo(() => {
+    return locations.filter(item => {
+      // PPE-023: If store keeper, show only assigned locations unless admin or HSE
+      if (isStoreKeeper && !myAssignedLocationIds.includes(item.id)) return false;
+
+      const matchSearch = item.code.toLowerCase().includes(search.toLowerCase()) || 
+                          item.name.toLowerCase().includes(search.toLowerCase());
+      const matchSite = !siteFilter || item.site === siteFilter;
+      const matchType = !typeFilter || item.locationType === typeFilter;
+      const matchCondition = !conditionFilter || (item.stockCondition || 'New') === conditionFilter;
+      const matchStatus = statusFilter === 'all' || (statusFilter === 'active' ? item.active : !item.active);
+      const isNotDeleted = !item.deletedAt;
+      return matchSearch && matchSite && matchType && matchCondition && matchStatus && isNotDeleted;
     });
-  }, [locations, search, siteFilter, conditionFilter, typeFilter, statusFilter]);
+  }, [locations, search, siteFilter, typeFilter, conditionFilter, statusFilter, isStoreKeeper, myAssignedLocationIds]);
 
-  const uniqueSites = React.useMemo(() => Array.from(new Set(locations.map(l => l.site))), [locations]);
+  const handleToggleActive = (item: Location) => {
+    if (item.active) {
+      const isScrap = item.stockCondition === 'Scrap' || item.locationType === 'Scrap';
+      const hasStock = stockBalances.some(b => b.locationId === item.id && b.quantityOnHand > 0);
+      if (!isScrap && hasStock) {
+        addToast(`Cannot deactivate: Location holds active stock. Stock must be moved out first (Rule G2 hard block, no override).`, 'error');
+        return;
+      }
 
-  // Compute location stock & hard-block constraints (Rule 3 & BD-I459, BD-I461)
-  const getLocationMeta = (loc: Location) => {
-    const locBatches = batches.filter(b => b.locationId === loc.id);
-    const onHand = locBatches.reduce((acc, b) => acc + b.quantity, 0);
-    const available = locBatches.reduce((acc, b) => acc + b.availableQty, 0);
-    const quarantined = locBatches.reduce((acc, b) => acc + b.quarantinedQty, 0);
-
-    // Hard block check: On hand > 0 (Scrap locations exempt)
-    const hasStockOnHand = onHand > 0 && loc.stockCondition !== 'Scrap';
-
-    // Hard block check: Only assigned location for an active catalog item
-    const isOnlyLocationForActiveItem = ppeItems.some(item => 
-      item.active && !item.deletedAt && item.locationIds.length === 1 && item.locationIds[0] === loc.id
-    );
-
-    // Hard block check: Has open or partially returned loans
-    const hasOpenLoans = visitorLoans.some(loan => 
-      (loan.status === 'Open' || loan.status === 'Overdue' || loan.status === 'Partially Returned') &&
-      (loan.fromLocationId === loc.id || loan.items.some(i => i.fromLocationId === loc.id))
-    );
-
-    const isHardBlocked = hasStockOnHand || isOnlyLocationForActiveItem || hasOpenLoans;
-
-    let hardBlockReason = '';
-    if (hasStockOnHand) hardBlockReason = `Contains ${onHand} units on hand. Scrap locations are exempt, but New/Used locations holding stock cannot be deactivated or trashed.`;
-    else if (isOnlyLocationForActiveItem) hardBlockReason = `It is the only assigned location for one or more active catalog items.`;
-    else if (hasOpenLoans) hardBlockReason = `It is currently associated with an open or overdue loan.`;
-
-    const capacityUsedPercent = loc.capacityUnits > 0 ? Math.round((onHand / loc.capacityUnits) * 100) : 0;
-
-    return { onHand, available, quarantined, isHardBlocked, hardBlockReason, capacityUsedPercent };
+      const check = checkInUse('locations', item.id);
+      if (check.inUse) {
+        setOverrideTarget({ location: item, action: 'deactivate', reasons: check.reasons });
+        return;
+      }
+      const res = toggleEntityActive('locations', item.id, false);
+      if (!res.success) addToast(res.message || 'Error deactivating location.', 'error');
+      else addToast('Location deactivated.', 'success');
+    } else {
+      toggleEntityActive('locations', item.id, true);
+      addToast('Location activated.', 'success');
+    }
   };
 
-  const handleToggleActive = async (loc: Location) => {
-    const meta = getLocationMeta(loc);
-    if (loc.active && meta.isHardBlocked) {
-      await showInfo(
-        'Strict Hard Block (No Override Allowed)',
-        `Cannot deactivate location "${loc.nameEn}".\n\nReason: ${meta.hardBlockReason}`
-      );
+  const handleDelete = (item: Location) => {
+    const isScrap = item.stockCondition === 'Scrap' || item.locationType === 'Scrap';
+    const hasStock = stockBalances.some(b => b.locationId === item.id && b.quantityOnHand > 0);
+    if (!isScrap && hasStock) {
+      addToast(`Cannot delete: Location holds active stock. Stock must be moved out first (Rule G2 hard block, no override).`, 'error');
       return;
     }
 
-    saveLocation({ ...loc, active: !loc.active });
-  };
-
-  const handleTrash = async (loc: Location) => {
-    const meta = getLocationMeta(loc);
-    if (meta.isHardBlocked) {
-      await showInfo(
-        'Strict Hard Block (No Override Allowed)',
-        `Cannot delete location "${loc.nameEn}".\n\nReason: ${meta.hardBlockReason}`
-      );
+    const check = checkInUse('locations', item.id);
+    if (check.inUse) {
+      setOverrideTarget({ location: item, action: 'delete', reasons: check.reasons });
       return;
     }
-
-    const confirmed = await showConfirm(
-      'Move to Trash',
-      `Move location "${loc.nameEn}" (${loc.code}) to the Trash Bin?`,
-      'Move to Trash',
-      true
-    );
-    if (confirmed) {
-      trashLocation(loc.id, 'Standard location deletion');
-    }
+    if (!window.confirm(`Are you sure you want to delete location ${item.code}?`)) return;
+    const res = softDeleteEntity('locations', item.id);
+    if (!res.success) addToast(res.message || 'Error deleting location.', 'error');
+    else addToast('Location moved to Trash Bin.', 'success');
   };
+
+  const handleOverrideConfirm = (reason: string) => {
+    if (!overrideTarget) return;
+    const { location, action } = overrideTarget;
+    if (action === 'delete') {
+      const res = softDeleteEntity('locations', location.id, reason);
+      if (res.success) addToast('Location deleted with Admin override.', 'success');
+      else addToast(res.message || 'Override failed.', 'error');
+    } else {
+      const res = toggleEntityActive('locations', location.id, false, reason);
+      if (res.success) addToast('Location deactivated with Admin override.', 'success');
+      else addToast(res.message || 'Override failed.', 'error');
+    }
+    setOverrideTarget(null);
+  };
+
+  const handleCloseOpeningBalance = (locationId: string) => {
+    if (!window.confirm('Closing Opening Balance will permanently lock this location from creating further opening balances (PPE-024). Confirm?')) return;
+    closeOpeningBalance(locationId, currentUser.id);
+    addToast('Opening balance locked for this location.', 'success');
+  };
+
+  const uniqueSites = React.useMemo(() => Array.from(new Set(locations.map(l => l.site).filter(Boolean))), [locations]);
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title={t('locations')}
-        subtitle="Manage warehouse facilities, stock condition flags (New/Used/Scrap), and store keeper assignments"
-        action={
-          currentUser.role === 'Admin' && (
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => navigate('/settings/store-keeper-assignments')}>
-                <Users className="w-3.5 h-3.5 me-1" /> Access Matrix
-              </Button>
-              <Button size="sm" onClick={() => navigate('/locations/new')}>
-                <Plus className="w-3.5 h-3.5 me-1.5" /> Add Location
-              </Button>
-            </div>
-          )
-        }
+    <div>
+      <PageHeader 
+        title={t('locations')} 
+        subtitle="Warehouses, site stores, and disposal staging with capacity tracking"
+        actions={
+          ['Admin', 'HSE Supervisor'].includes(currentUser.role) ? (
+            <Button onClick={() => navigate('/locations/new')}><Plus className="w-4 h-4 mr-2" /> Add Location</Button>
+          ) : undefined
+        } 
       />
-
+      
       <FilterBar>
-        <SearchInput
-          placeholder="Search by code or location name..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+        <SearchInput 
+          placeholder={t('search')} 
+          value={search} 
+          onChange={(e) => setSearch(e.target.value)} 
         />
-        <Select value={siteFilter} onChange={e => setSiteFilter(e.target.value)} className="w-36">
-          <option value="all">All Sites</option>
+        <Select value={siteFilter} onChange={e => setSiteFilter(e.target.value)} className="w-40">
+          <option value="">All Sites</option>
           {uniqueSites.map(s => <option key={s} value={s}>{s}</option>)}
         </Select>
-        <Select value={conditionFilter} onChange={e => setConditionFilter(e.target.value)} className="w-36">
-          <option value="all">All Stock Conditions</option>
-          <option value="New">New Stock</option>
-          <option value="Used">Used / Reused</option>
-          <option value="Scrap">Scrap</option>
-        </Select>
-        <Select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="w-40">
-          <option value="all">All Facility Types</option>
+        <Select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="w-48">
+          <option value="">All Types</option>
+          <option value="General">General</option>
           <option value="Central Warehouse">Central Warehouse</option>
           <option value="Site Store">Site Store</option>
           <option value="Department Store">Department Store</option>
-          <option value="General">General</option>
+          <option value="Scrap">Scrap</option>
+          <option value="Used">Used</option>
         </Select>
-        <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className="w-28">
+        <Select value={conditionFilter} onChange={e => setConditionFilter(e.target.value)} className="w-36">
+          <option value="">All Conditions</option>
+          <option value="New">New</option>
+          <option value="Used">Used</option>
+          <option value="Scrap">Scrap</option>
+        </Select>
+        <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-32">
           <option value="all">All Status</option>
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
         </Select>
       </FilterBar>
 
-      <ContainerCard noPadding className="overflow-hidden">
-        <DataTable
-          data={filteredLocations}
-          keyExtractor={(item) => item.id}
-          emptyState={<EmptyState icon={<Warehouse className="w-8 h-8 text-slate-400" />} title="No locations found" />}
-          columns={[
-            {
-              key: 'code',
-              header: 'Code',
-              className: 'w-36 font-mono font-bold text-xs text-slate-900 ',
-              render: (loc) => loc.code
-            },
-            {
-              key: 'name',
-              header: 'Name & Site',
-              render: (loc) => (
-                <div>
-                  <span className="font-bold text-slate-900 block">{loc.nameEn}</span>
-                  <span className="text-[11px] text-slate-500 font-arabic">{loc.nameAr}</span>
-                  <span className="text-[10px] text-slate-400 font-mono block">Site: {loc.site} • {loc.locationType}</span>
-                </div>
-              )
-            },
-            {
-              key: 'condition',
-              header: 'Stock Condition (Rule 4)',
-              className: 'w-36',
-              render: (loc) => (
-                <StatusBadge status={loc.stockCondition} />
-              )
-            },
-            {
-              key: 'capacity',
-              header: 'Capacity & Stock',
-              className: 'w-44',
-              render: (loc) => {
-                const meta = getLocationMeta(loc);
-                return (
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs font-mono">
-                      <span className="font-bold text-slate-800 ">{meta.onHand} On Hand</span>
-                      <span className="text-slate-400">
-                        {loc.stockCondition === 'Scrap' ? 'No limit' : `/ ${loc.capacityUnits}`}
-                      </span>
-                    </div>
-                    {loc.stockCondition !== 'Scrap' && (
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full ${meta.capacityUsedPercent > 100 ? 'bg-danger' : 'bg-primary'}`}
- style={{ width: `${Math.min(100, meta.capacityUsedPercent)}%` }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-            },
-            {
-              key: 'storeKeepers',
-              header: 'Assigned Keepers (BD-I462)',
-              render: (loc) => {
-                const keepers = employees.filter(e => loc.assignedStoreKeeperIds.includes(e.id));
-                if (keepers.length === 0) {
-                  return <span className="text-danger font-semibold text-[11px]">Unassigned</span>;
-                }
-                return (
-                  <div className="flex flex-wrap gap-1">
-                    {keepers.map(k => (
-                      <span key={k.id} className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-[#E2E8F0] text-[10px] font-medium">
-                        {k.name}
-                      </span>
-                    ))}
-                  </div>
-                );
-              }
-            },
-            {
-              key: 'obStatus',
-              header: 'Opening Bal',
-              className: 'w-28 text-center',
-              render: (loc) => (
-                <StatusBadge 
-                  status={loc.openingBalanceStatus === 'Open' ? 'warning' : 'neutral'} 
-                  label={loc.openingBalanceStatus} 
-                />
-              )
-            },
-            {
-              key: 'active',
-              header: 'Active',
-              className: 'w-20 text-center',
-              render: (loc) => {
-                const meta = getLocationMeta(loc);
-                return (
-                  <div title={meta.isHardBlocked ? meta.hardBlockReason : undefined}>
-                    <ToggleSwitch
-                      checked={loc.active}
-                      onChange={() => handleToggleActive(loc)}
-                    />
-                  </div>
-                );
-              }
-            },
-            {
-              key: 'actions',
-              header: '',
-              align: 'right',
-              className: 'w-24 text-end',
-              render: (loc) => {
-                const meta = getLocationMeta(loc);
-                return (
-                  <TableActionsButtons
-                    onView={() => setSelectedLocForDetails(loc)}
-                    viewTooltip="View Location Details (BD-I460)"
-                    onEdit={currentUser.role === 'Admin' ? () => navigate(`/locations/${loc.id}/edit`) : undefined}
-                    editTooltip="Edit Location (BD-I458)"
-                    onDelete={currentUser.role === 'Admin' ? () => handleTrash(loc) : undefined}
-                    deleteTooltip={meta.isHardBlocked ? `HARD BLOCKED: ${meta.hardBlockReason}` : 'Move to Trash (BD-I461)'}
-                    size="sm"
-                  />
-                );
-              }
-            }
-          ]}
-        />
-      </ContainerCard>
-
-      {/* DETAIL DRAWER (BD-I460) */}
-      {selectedLocForDetails && (
-        <SlideOverDrawer
-          isOpen={Boolean(selectedLocForDetails)}
-          onClose={() => setSelectedLocForDetails(null)}
-          title={`Location: ${selectedLocForDetails.nameEn}`}
-          subtitle={`Code: ${selectedLocForDetails.code} • Site: ${selectedLocForDetails.site}`}
-          width="lg"
-          badge={<StatusBadge status={selectedLocForDetails.stockCondition} />}
-        >
-          {(() => {
-            const meta = getLocationMeta(selectedLocForDetails);
-            const locBatches = batches.filter(b => b.locationId === selectedLocForDetails.id);
-
+      <DataTable 
+        data={filteredItems}
+        keyExtractor={(item) => item.id}
+        emptyState={<EmptyState icon={<MapPin />} title="No locations accessible" description={isStoreKeeper ? "You are not assigned to any locations." : "Create a location to manage stock balances."} />}
+        columns={[
+          { key: 'code', header: t('code'), render: (item) => (
+            <span 
+              onClick={() => setSelectedLocation(item)}
+              className="font-mono text-xs font-bold text-accent cursor-pointer hover:underline"
+            >
+              {item.code}
+            </span>
+          )},
+          { key: 'name', header: t('name'), render: (item) => (
+            <div>
+              <div 
+                onClick={() => setSelectedLocation(item)}
+                className="font-medium text-ink cursor-pointer hover:underline"
+              >
+                {item.name}
+              </div>
+              <div className="text-[11px] text-body">{item.site} &middot; {item.locationType}</div>
+            </div>
+          )},
+          { key: 'condition', header: 'Condition (G6)', render: (item) => (
+            <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+              item.stockCondition === 'Scrap' ? 'bg-red-100 text-safety-red' : item.stockCondition === 'Used' ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-safety-green'
+            }`}>
+              {item.stockCondition || 'New'}
+            </span>
+          )},
+          { key: 'capacity', header: 'Capacity Utilization (PPE-021)', render: (item) => {
+            const onHand = stockBalances
+              .filter(b => b.locationId === item.id)
+              .reduce((sum, b) => sum + b.quantityOnHand, 0);
+            const cap = item.capacityUnits || 1;
+            const pct = Math.round((onHand / cap) * 100);
+            const isHigh = pct >= 90;
             return (
-              <div className="space-y-5">
-                <div className="grid grid-cols-2 gap-3 p-3.5 bg-slate-50 border border-[#E2E8F0] rounded-xl text-xs">
-                  <div>
-                    <span className="text-[10px] font-mono text-slate-400 uppercase">Facility Type</span>
-                    <p className="font-semibold text-slate-800 ">{selectedLocForDetails.locationType}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-mono text-slate-400 uppercase">Opening Balance Status</span>
-                    <p className="font-bold text-amber-800 ">{selectedLocForDetails.openingBalanceStatus}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-mono text-slate-400 uppercase">Capacity Units</span>
-                    <p className="font-semibold text-slate-800 ">
-                      {selectedLocForDetails.stockCondition === 'Scrap' ? 'Optional (No limit)' : selectedLocForDetails.capacityUnits}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-mono text-slate-400 uppercase">Capacity Used</span>
-                    <p className="font-semibold text-slate-800 ">{meta.capacityUsedPercent}%</p>
-                  </div>
+              <div className="w-36">
+                <div className="flex justify-between text-[11px] mb-1 font-mono">
+                  <span>{onHand}/{cap}</span>
+                  <span className={isHigh ? 'text-safety-red font-bold' : 'text-body'}>{pct}%</span>
                 </div>
-
-                {meta.isHardBlocked && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-xs text-red-900 ">
-                    <AlertOctagon className="w-4 h-4 text-danger shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold block">Hard-Block Deactivation Guard Active:</span>
-                      <p className="text-[11px] leading-relaxed">{meta.hardBlockReason}</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Assigned Keepers */}
-                <div className="space-y-1.5">
-                  <h4 className="font-bold uppercase tracking-wider text-xs text-slate-700 ">
-                    Responsible Store Keeper(s) (BD-I462)
-                  </h4>
-                  <div className="flex flex-wrap gap-1.5">
-                    {employees.filter(e => selectedLocForDetails.assignedStoreKeeperIds.includes(e.id)).map(k => (
-                      <span key={k.id} className="px-2.5 py-1 bg-white border border-[#E2E8F0] rounded-lg text-xs font-medium text-slate-800 ">
-                        {k.name} ({k.employeeCode})
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Live Stock Summary */}
-                <div className="space-y-2">
-                  <h4 className="font-bold uppercase tracking-wider text-xs text-slate-700 ">
-                    Live Stock Batches in Location ({locBatches.length})
-                  </h4>
-                  {locBatches.length === 0 ? (
-                    <p className="text-slate-400 text-xs italic">Location currently holds zero stock.</p>
-                  ) : (
-                    <div className="divide-y divide-[#E2E8F0] border border-[#E2E8F0] rounded-xl overflow-hidden">
-                      {locBatches.map(b => {
-                        const ppe = ppeItems.find(p => p.id === b.ppeItemId);
-                        return (
-                          <div key={b.id} className="p-2.5 bg-white flex items-center justify-between text-xs">
-                            <div>
-                              <span className="font-bold text-slate-900 ">{ppe?.nameEn || b.ppeItemId}</span>
-                              <span className="text-[10px] text-slate-400 font-mono block">Batch: {b.batchNumber}</span>
-                            </div>
-                            <div className="text-end font-mono">
-                              <span className="font-bold text-slate-900 ">{b.availableQty} Avail</span>
-                              <span className="text-[10px] text-slate-400 block">{b.quantity} on hand</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full ${pct > 100 ? 'bg-safety-red' : isHigh ? 'bg-safety-amber-signal' : 'bg-accent'}`}
+                    style={{ width: `${Math.min(100, pct)}%` }}
+                  />
                 </div>
               </div>
             );
-          })()}
-        </SlideOverDrawer>
-      )}
+          }},
+          { key: 'openingBalance', header: 'Opening Bal (PPE-024)', render: (item) => (
+            item.openingBalanceClosed ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-safety-red bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                <Lock className="w-3 h-3" /> Locked
+              </span>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-safety-green font-medium">Open</span>
+                {['Admin'].includes(currentUser.role) && (
+                  <button 
+                    onClick={() => handleCloseOpeningBalance(item.id)}
+                    className="text-[10px] text-body hover:text-safety-red underline cursor-pointer"
+                    title="Close opening balance"
+                  >
+                    Lock
+                  </button>
+                )}
+              </div>
+            )
+          )},
+          { key: 'active', header: t('active'), render: (item) => (
+            <ToggleSwitch 
+              checked={item.active} 
+              onChange={() => handleToggleActive(item)} 
+              disabled={isStoreKeeper}
+            />
+          )},
+          { key: 'actions', header: '', className: 'text-right', render: (item) => (
+            <div className="flex justify-end gap-1.5">
+              <Button variant="ghost" size="sm" onClick={() => setSelectedLocation(item)} title="View Details (PPE-021)">
+                <Eye className="w-3.5 h-3.5 mr-1" /> View
+              </Button>
+              {['Admin', 'HSE Supervisor'].includes(currentUser.role) && (
+                <>
+                  <Button variant="ghost" size="sm" onClick={() => navigate(`/locations/${item.id}/edit`)}>Edit</Button>
+                  <Button variant="ghost" size="sm" className="text-safety-red hover:bg-safety-red/10" onClick={() => handleDelete(item)}>Delete</Button>
+                </>
+              )}
+            </div>
+          )}
+        ]}
+      />
+
+      {/* PPE-021 Location Details Modal */}
+      <LocationDetailModal 
+        location={selectedLocation} 
+        onClose={() => setSelectedLocation(null)} 
+        onEdit={(loc) => {
+          setSelectedLocation(null);
+          navigate(`/locations/${loc.id}/edit`);
+        }}
+      />
+
+      {/* G2 In-Use Protection Override Modal */}
+      <OverrideModal 
+        isOpen={!!overrideTarget}
+        entityName={overrideTarget?.location.code || ''}
+        reasons={overrideTarget?.reasons || []}
+        actionLabel={overrideTarget?.action === 'delete' ? 'Override and Delete' : 'Override and Deactivate'}
+        onClose={() => setOverrideTarget(null)}
+        onConfirm={handleOverrideConfirm}
+      />
     </div>
   );
 }

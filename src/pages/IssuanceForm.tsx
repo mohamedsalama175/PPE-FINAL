@@ -1,463 +1,326 @@
 import * as React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
-import { Button } from '../components/ui/Button';
+import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { SignaturePad } from '../components/ui/SignaturePad';
+import { Button } from '../components/ui/Button';
+import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
 import { addDays, addMonths, addYears, format } from 'date-fns';
-import { ShieldAlert, AlertTriangle, CheckCircle2, User, Package, Calendar, Clock, RotateCcw, AlertOctagon } from 'lucide-react';
-import { PPEItem, Batch, Location } from '../types';
+import { ShieldCheck, AlertTriangle } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function IssuanceForm() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { t, language } = useTranslation();
-  const addToast = useToastStore(s => s.addToast);
+  const queryEmployeeId = searchParams.get('employeeId');
+  const queryItemId = searchParams.get('itemId');
+  const queryReplacesIssuanceId = searchParams.get('replacesIssuanceId');
 
-  const { 
-    ppeItems, 
-    locations, 
-    employees, 
-    currentUser, 
-    batches, 
-    issuances, 
-    issueSinglePPE,
-    itemGroups,
-    attributes
-  } = usePPEStore();
+  const { ppeItems, locations, employees, issuances, currentUser, issueItem, batches, stockBalances, validateGenderMatch, units } = usePPEStore();
+  // PPE-058: serials picked for a tracked item (quantity = serials picked)
+  const [serialIds, setSerialIds] = React.useState<string[]>([]);
 
   const isStoreKeeper = currentUser.role === 'Store Keeper';
-  const assignedLocations = React.useMemo(() => {
-    if (currentUser.role === 'Admin' || currentUser.role === 'HSE Supervisor') {
-      return locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap');
-    }
-    return locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap' && l.assignedStoreKeeperIds.includes(currentUser.id));
-  }, [locations, currentUser]);
+  const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
+  const addToast = useToastStore(s => s.addToast);
 
-  const isBlockedKeeper = isStoreKeeper && assignedLocations.length === 0;
+  const priorIssuance = React.useMemo(() => {
+    return queryReplacesIssuanceId ? issuances.find(i => i.id === queryReplacesIssuanceId) : undefined;
+  }, [queryReplacesIssuanceId, issuances]);
 
-  // Query parameter pre-fills (from Replacements Due NEW-07)
-  const initialEmployeeId = searchParams.get('employeeId') || (employees[0]?.id || '');
-  const initialItemId = searchParams.get('itemId') || '';
-  const initialVariant = searchParams.get('variant') || '';
-  const replacesIssuanceId = searchParams.get('replacesId') || '';
+  const [formData, setFormData] = React.useState({
+    employeeId: queryEmployeeId || employees[0]?.id || '',
+    ppeItemId: queryItemId || ppeItems[0]?.id || '',
+    locationId: myLocations[0]?.id || '',
+    quantity: 1,
+    batchNumber: '',
+    variantKey: '',
+    replacesIssuanceId: queryReplacesIssuanceId || '',
+    storeKeeperSignature: '',
+    receiverSignature: ''
+  });
 
-  const [employeeId, setEmployeeId] = React.useState(initialEmployeeId);
-  const [locationId, setLocationId] = React.useState(assignedLocations[0]?.id || '');
-  const [ppeItemId, setPpeItemId] = React.useState(initialItemId || (ppeItems[0]?.id || ''));
-  const [variantKey, setVariantKey] = React.useState(initialVariant);
-  const [quantity, setQuantity] = React.useState(1);
-  const [batchNumber, setBatchNumber] = React.useState('');
-  const [batchReason, setBatchReason] = React.useState('');
-  const [replacesId, setReplacesId] = React.useState(replacesIssuanceId);
-  const [processOldReturn, setProcessOldReturn] = React.useState(!!replacesIssuanceId);
-  const [oldReturnCondition, setOldReturnCondition] = React.useState<'good' | 'damaged' | 'worn_out' | 'lost'>('worn_out');
+  const [issuanceError, setIssuanceError] = React.useState('');
+  const [activeSigner, setActiveSigner] = React.useState<'receiver' | 'storeKeeper' | null>(null);
 
-  // Dual Signatures (Rule 2)
-  const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
-  const [receiverSignature, setReceiverSignature] = React.useState('');
-  const [submitting, setSubmitting] = React.useState(false);
+  const selectedItem = React.useMemo(() => ppeItems.find(p => p.id === formData.ppeItemId), [ppeItems, formData.ppeItemId]);
+  const selectedEmployee = React.useMemo(() => employees.find(e => e.id === formData.employeeId), [employees, formData.employeeId]);
 
-  const selectedEmployee = React.useMemo(() => employees.find(e => e.id === employeeId), [employees, employeeId]);
-  const selectedItem = React.useMemo(() => ppeItems.find(p => p.id === ppeItemId), [ppeItems, ppeItemId]);
-  const selectedLoc = React.useMemo(() => locations.find(l => l.id === locationId), [locations, locationId]);
-
-  // Available items for location (active only)
-  const availableItems = React.useMemo(() => {
-    if (!locationId) return [];
-    return ppeItems.filter(p => p.active && !p.deletedAt && (p.locationIds || []).includes(locationId));
-  }, [ppeItems, locationId]);
-
-  // Variants from Item Group
-  const availableVariants = React.useMemo(() => {
-    if (!selectedItem) return ['Standard'];
-    const group = itemGroups.find(g => g.id === selectedItem.itemGroupId);
-    if (!group) return ['Standard'];
-    const groupAttrs = attributes.filter(a => group.assignedAttributeIds.includes(a.id));
-    
-    // Find size or gender values
-    const variants: string[] = [];
-    const sizeAttr = groupAttrs.find(a => a.code.toUpperCase() === 'SIZE');
-    const genderAttr = groupAttrs.find(a => a.code.toUpperCase() === 'GENDER');
-
-    if (sizeAttr && sizeAttr.values.length > 0) {
-      sizeAttr.values.forEach(sv => {
-        if (genderAttr && genderAttr.values.length > 0) {
-          genderAttr.values.forEach(gv => {
-            variants.push(`${sv.valueEn} / ${gv.valueEn}`);
-          });
-        } else {
-          variants.push(sv.valueEn);
-        }
-      });
-    } else if (genderAttr && genderAttr.values.length > 0) {
-      genderAttr.values.forEach(gv => variants.push(gv.valueEn));
-    }
-
-    return variants.length > 0 ? variants : ['Standard'];
-  }, [selectedItem, itemGroups, attributes]);
-
-  React.useEffect(() => {
-    if (availableVariants.length > 0 && !variantKey) {
-      // Auto pre-fill from employee last received size if available
-      const lastSize = selectedEmployee?.lastReceivedSizes?.[ppeItemId]?.rawKey;
-      if (lastSize && availableVariants.includes(lastSize)) {
-        setVariantKey(lastSize);
-      } else {
-        setVariantKey(availableVariants[0]);
-      }
-    }
-  }, [availableVariants, variantKey, selectedEmployee, ppeItemId]);
-
-  // FIFO Batch recommendation: oldest available batch first
-  const eligibleBatches = React.useMemo(() => {
-    if (!ppeItemId || !locationId) return [];
+  // FIFO Batches recommendation (Rule G14)
+  const availableBatches = React.useMemo(() => {
+    if (!formData.ppeItemId || !formData.locationId) return [];
     return batches
-      .filter(b => b.ppeItemId === ppeItemId && b.locationId === locationId && b.availableQty > 0 && b.status === 'Active')
+      .filter(b => b.ppeItemId === formData.ppeItemId && b.locationId === formData.locationId && b.availableQty > 0 && b.status === 'Active')
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [batches, ppeItemId, locationId]);
-
-  const recommendedFifoBatch = eligibleBatches[0];
+  }, [formData.ppeItemId, formData.locationId, batches]);
 
   React.useEffect(() => {
-    if (eligibleBatches.length > 0 && (!batchNumber || !eligibleBatches.some(b => b.batchNumber === batchNumber))) {
-      setBatchNumber(eligibleBatches[0].batchNumber);
+    if (availableBatches.length > 0 && !formData.batchNumber) {
+      setFormData(prev => ({ ...prev, batchNumber: availableBatches[0].batchNumber }));
     }
-  }, [eligibleBatches, batchNumber]);
+  }, [availableBatches]);
 
-  // Gender Match Rule (Rule 5)
-  const genderMatchError = React.useMemo(() => {
-    if (!selectedItem || !selectedEmployee) return null;
-    const group = itemGroups.find(g => g.id === selectedItem.itemGroupId);
-    if (!group || !group.requiresGenderMatch) return null;
-
-    // Check if variant indicates gender
-    const vUpper = (variantKey || '').toUpperCase();
-    const empGender = (selectedEmployee.gender || 'Unisex').toUpperCase();
-
-    if (vUpper.includes('MALE') && !vUpper.includes('FEMALE') && empGender === 'FEMALE') {
-      return `Gender Match Violation: Item requires gender match. Variant "${variantKey}" does not match employee gender (${selectedEmployee.gender}).`;
-    }
-    if (vUpper.includes('FEMALE') && empGender === 'MALE') {
-      return `Gender Match Violation: Item requires gender match. Variant "${variantKey}" does not match employee gender (${selectedEmployee.gender}).`;
-    }
-
-    return null;
-  }, [selectedItem, selectedEmployee, itemGroups, variantKey]);
-
-  // Active Issuance held by employee for same item
-  const existingHeldIssuance = React.useMemo(() => {
-    if (!employeeId || !ppeItemId) return null;
-    return issuances.find(i => i.employeeId === employeeId && i.ppeItemId === ppeItemId && i.status === 'issued');
-  }, [issuances, employeeId, ppeItemId]);
-
-  // Expected replacement date calculation (Rule 12)
   const expectedReplacementDate = React.useMemo(() => {
-    if (!selectedItem) return undefined;
+    if (!selectedItem || !selectedItem.lifespanValue) return undefined;
     const now = new Date();
-    if (selectedItem.lifespanUnit === 'Days') return format(addDays(now, selectedItem.lifespanValue), 'yyyy-MM-dd');
-    if (selectedItem.lifespanUnit === 'Months') return format(addMonths(now, selectedItem.lifespanValue), 'yyyy-MM-dd');
-    if (selectedItem.lifespanUnit === 'Years') return format(addYears(now, selectedItem.lifespanValue), 'yyyy-MM-dd');
+    if (selectedItem.lifespanType === 'Days') return format(addDays(now, selectedItem.lifespanValue), 'yyyy-MM-dd');
+    if (selectedItem.lifespanType === 'Months') return format(addMonths(now, selectedItem.lifespanValue), 'yyyy-MM-dd');
+    if (selectedItem.lifespanType === 'Years') return format(addYears(now, selectedItem.lifespanValue), 'yyyy-MM-dd');
     return undefined;
   }, [selectedItem]);
 
-  const selectedBatchObj = React.useMemo(() => {
-    return eligibleBatches.find(b => b.batchNumber === batchNumber);
-  }, [eligibleBatches, batchNumber]);
+  const tracked = !!selectedItem?.serialTracked;
+  const unitSymbol = units.find(u => u.id === selectedItem?.unitId)?.symbol || '';
+  const quantity = tracked ? serialIds.length : formData.quantity;
+  React.useEffect(() => { setSerialIds([]); }, [formData.ppeItemId, formData.locationId]);
 
-  const isChangingFifo = recommendedFifoBatch && batchNumber !== recommendedFifoBatch.batchNumber;
+  React.useEffect(() => {
+    if (!selectedItem || !selectedItem.locationIds.includes(formData.locationId)) {
+      setIssuanceError('Item is not configured as valid for the selected location.');
+      return;
+    }
+
+    const bal = stockBalances.find(b => b.ppeItemId === formData.ppeItemId && b.locationId === formData.locationId);
+    const availableOnHand = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
+    if (availableOnHand < quantity) {
+      setIssuanceError(`Insufficient available stock (Available: ${availableOnHand} ${unitSymbol}, Requested: ${quantity} ${unitSymbol}).`);
+      return;
+    }
+
+    // Rule G4: Gender Matching Validation
+    if (formData.employeeId && formData.ppeItemId) {
+      const genderCheck = validateGenderMatch(formData.employeeId, formData.ppeItemId, formData.variantKey);
+      if (!genderCheck.valid) {
+        setIssuanceError(genderCheck.reason || 'Gender mismatch violation (Rule G4).');
+        return;
+      }
+    }
+
+    setIssuanceError('');
+  }, [formData.locationId, formData.ppeItemId, quantity, unitSymbol, formData.employeeId, formData.variantKey, selectedItem, stockBalances, validateGenderMatch]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (genderMatchError) {
-      addToast(genderMatchError, 'error');
+    if (issuanceError) {
+      addToast(issuanceError, 'error');
+      return;
+    }
+    if (tracked && serialIds.length === 0) {
+      addToast('Pick or scan the serial numbers being issued.', 'error');
+      return;
+    }
+    if (!formData.employeeId || !formData.ppeItemId || !formData.locationId || quantity <= 0) {
+      addToast('Please fill all required fields correctly.', 'error');
+      return;
+    }
+    if (!tracked && !formData.batchNumber) {
+      addToast('A valid active batch must be selected (Rule G14 FIFO).', 'error');
+      return;
+    }
+    if (!formData.storeKeeperSignature || !formData.receiverSignature) {
+      addToast('Both digital signatures (Store Keeper & Receiver) are mandatory.', 'error');
       return;
     }
 
-    if (!selectedBatchObj || selectedBatchObj.availableQty < quantity) {
-      addToast(`Insufficient stock in selected batch. Available: ${selectedBatchObj?.availableQty || 0}.`, 'error');
-      return;
-    }
-
-    if (isChangingFifo && !batchReason.trim()) {
-      addToast('A reason is required when selecting a batch other than the oldest FIFO batch.', 'error');
-      return;
-    }
-
-    if (!storeKeeperSignature || !receiverSignature) {
-      addToast('Dual digital signatures (Store Keeper & Employee) are strictly mandatory.', 'error');
-      return;
-    }
-
-    setSubmitting(true);
-    const ref = issueSinglePPE({
-      employeeId,
-      ppeItemId,
-      locationId,
+    const res = issueItem({
+      employeeId: formData.employeeId,
+      ppeItemId: formData.ppeItemId,
+      locationId: formData.locationId,
       quantity,
-      batchNumber,
-      variantKey: variantKey || 'Standard',
-      conditionAtIssue: selectedLoc?.stockCondition === 'Used' ? 'Reused' : 'New',
-      issueDate: new Date().toISOString().split('T')[0],
-      expectedReplacementDate,
-      storeKeeperSignature,
-      receiverSignature,
-      issuedBy: currentUser.name,
-      replacesIssuanceId: replacesId || (existingHeldIssuance ? existingHeldIssuance.id : undefined)
+      batchNumber: tracked ? undefined : formData.batchNumber,
+      serialIds: tracked ? serialIds : undefined,
+      variantKey: formData.variantKey,
+      replacesIssuanceId: formData.replacesIssuanceId || undefined,
+      issueDate: new Date().toISOString(),
+      storeKeeperSignature: formData.storeKeeperSignature,
+      receiverSignature: formData.receiverSignature,
+      issuedBy: currentUser.id
     });
-    setSubmitting(false);
 
-    addToast(`PPE Item issued successfully (${ref}).`, 'success');
-    navigate('/issuances');
+    if (!res.success) {
+      addToast(res.message || 'Issue failed.', 'error');
+      return;
+    }
+    if (res.success) {
+      addToast(formData.replacesIssuanceId ? 'Replacement PPE successfully issued. Prior issuance marked Replaced (PPE-034).' : 'PPE successfully issued with digital audit signatures.', 'success');
+      navigate('/issuances');
+    }
   };
 
-  if (isBlockedKeeper) {
-    return (
-      <ContainerCard className="p-8 text-center space-y-4 border-red-200 ">
-        <AlertOctagon className="w-12 h-12 text-red-600 mx-auto" />
-        <h2 className="text-base font-bold text-slate-900 ">Access Restricted</h2>
-        <p className="text-xs text-slate-600 max-w-md mx-auto">
-          In accordance with rule BD-I462, store keepers with zero assigned warehouses are blocked from issuing PPE.
-        </p>
-      </ContainerCard>
-    );
-  }
-
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-3xl space-y-6 pb-20">
       <PageHeader
         title="Issue PPE (Single Item)"
-        subtitle="Issue standard PPE item with dynamic variants, FIFO batching, Gender Match validation, and dual canvas signatures (BD-I467)"
+        subtitle="Direct equipment assignment with FIFO batch selection, lifespan calculation, and dual signatures"
+        onBack={() => navigate('/issuances')}
       />
 
-      <ContainerCard className="p-6">
-        <form onSubmit={handleSubmit} className="space-y-6">
-        {genderMatchError && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-md flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <div className="text-xs text-red-800">
-              <span className="font-bold">Gender Match Error:</span> {genderMatchError}
-            </div>
-          </div>
-        )}
-
-        {existingHeldIssuance && (
-          <div className="p-4 bg-amber-50 border border-amber-200 rounded-md space-y-2">
-            <div className="flex items-center justify-between text-xs font-bold text-amber-900">
-              <span className="flex items-center gap-1.5">
-                <RotateCcw className="w-4 h-4 text-amber-700" /> Employee currently holds an active issuance of this item
-              </span>
-              <span className="font-mono text-amber-800">Ref: {existingHeldIssuance.reference}</span>
-            </div>
-            <p className="text-xs text-amber-800">
-              Issued on: {existingHeldIssuance.issueDate} | Replacement due:{' '}
-              {existingHeldIssuance.expectedReplacementDate || 'N/A'}.
-            </p>
-            <div className="pt-2 flex items-center gap-4 text-xs">
-              <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-800">
-                <input
-                  type="checkbox"
-                  checked={processOldReturn}
-                  onChange={e => setProcessOldReturn(e.target.checked)}
-                  className="rounded text-blue-600"
-                />
-                Mark previous issuance as replaced upon completing this issue
-              </label>
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Location <span className="text-red-500">*</span>
-            </label>
-            <Select
-              value={locationId}
-              onChange={e => {
-                setLocationId(e.target.value);
-                setBatchNumber('');
-              }}
-              required
-            >
-              {assignedLocations.map(l => (
-                <option key={l.id} value={l.id}>
-                  {l.code} — {l.nameEn} ({l.stockCondition})
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Employee <span className="text-red-500">*</span>
-            </label>
-            <Select
-              value={employeeId}
-              onChange={e => setEmployeeId(e.target.value)}
-              required
-            >
-              {employees
-                .filter(e => e.status === 'Active')
-                .map(e => (
-                  <option key={e.id} value={e.id}>
-                    {e.name} ({e.jobPosition || e.jobPositionId} — {e.site}) [{e.gender}]
-                  </option>
-                ))}
-            </Select>
-          </div>
+      {priorIssuance && (
+        <div className="p-3 bg-blue-50 border border-blue-200 text-blue-900 rounded text-xs font-semibold flex items-center justify-between">
+          <span>Replacing Active Issuance: <strong>{priorIssuance.reference || priorIssuance.id}</strong> (Prior issuance will be marked 'Replaced' and ceases to be active per PPE-034).</span>
         </div>
+      )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-1">
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              PPE Item <span className="text-red-500">*</span>
-            </label>
-            <Select
-              value={ppeItemId}
-              onChange={e => {
-                setPpeItemId(e.target.value);
-                setVariantKey('');
-                setBatchNumber('');
-              }}
-              required
-            >
-              {availableItems.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.itemCode} — {language === 'en' ? p.nameEn : p.nameAr}
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Variant / Size</label>
-            <Select value={variantKey} onChange={e => setVariantKey(e.target.value)}>
-              {availableVariants.map(v => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Quantity</label>
-            <Input
-              type="number"
-              min={1}
-              value={quantity}
-              onChange={e => setQuantity(parseInt(e.target.value) || 1)}
-              required
-            />
-          </div>
-        </div>
-
-        {/* FIFO Batch Selector */}
-        <div className="p-4 bg-slate-50 border border-slate-200 rounded-md space-y-3">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-blue-600" /> Available Batches (FIFO Ordered)
-            </label>
-            {recommendedFifoBatch && (
-              <span className="text-[11px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                Recommended FIFO: {recommendedFifoBatch.batchNumber} (Avail: {recommendedFifoBatch.availableQty})
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">Select Batch</label>
-              <Select value={batchNumber} onChange={e => setBatchNumber(e.target.value)} required>
-                {eligibleBatches.map((b, idx) => (
-                  <option key={b.id} value={b.batchNumber}>
-                    {idx === 0 ? '⭐ [Oldest / FIFO] ' : ''}
-                    {b.batchNumber} — Avail: {b.availableQty} ({b.condition}) {b.expiryDate ? `Exp: ${b.expiryDate}` : ''}
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <FormSection title="Recipient & Location">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormGroup label="Employee">
+              <Select value={formData.employeeId} onChange={e => setFormData({...formData, employeeId: e.target.value})}>
+                {employees.filter(e => e.active).map(emp => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.employeeCode}) {emp.gender ? `· ${emp.gender}` : ''}
                   </option>
                 ))}
               </Select>
-            </div>
+            </FormGroup>
 
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Condition at Issue (Auto)
-              </label>
-              <Input
-                readOnly
-                value={selectedLoc?.stockCondition === 'Used' ? 'Reused (Fresh lifespan starts)' : 'New'}
-                className="bg-slate-100 text-slate-700"
-              />
-            </div>
+            <FormGroup label="Issuing Location">
+              <Select value={formData.locationId} onChange={e => setFormData({...formData, locationId: e.target.value, batchNumber: ''})}>
+                {myLocations.map(l => (
+                  <option key={l.id} value={l.id}>{l.name} ({l.site})</option>
+                ))}
+              </Select>
+            </FormGroup>
           </div>
+        </FormSection>
 
-          {isChangingFifo && (
-            <div>
-              <label className="block text-xs font-semibold text-amber-800 mb-1">
-                FIFO Override Justification <span className="text-red-500">*</span>
-              </label>
-              <Input
-                placeholder="Explain why the oldest available batch was bypassed..."
-                value={batchReason}
-                onChange={e => setBatchReason(e.target.value)}
-                required
-              />
+        <FormSection title="Equipment Specifications">
+          {issuanceError && (
+            <div className="p-3 bg-red-50 border border-red-200 text-safety-red rounded text-xs font-semibold mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{issuanceError}</span>
             </div>
           )}
-        </div>
 
-        {/* Expected Replacement Date Banner */}
-        {expectedReplacementDate && (
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded flex items-center justify-between text-xs text-slate-700">
-            <span>
-              <span className="font-semibold text-slate-900">Calculated Expected Replacement Date:</span>{' '}
-              {expectedReplacementDate} (Lifespan: {selectedItem?.lifespanValue} {selectedItem?.lifespanUnit})
-            </span>
-            <span className="text-[11px] text-slate-500 italic">Future lifespan changes will not alter this issuance</span>
-          </div>
-        )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormGroup label="PPE Item">
+              <Select value={formData.ppeItemId} onChange={e => setFormData({...formData, ppeItemId: e.target.value, batchNumber: ''})}>
+                {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.itemCode})</option>
+                ))}
+              </Select>
+            </FormGroup>
 
-        {/* Dual HTML5 Digital Signatures (Rule 2) */}
-        <div className="border-t border-slate-100 pt-4 space-y-4">
-          <div>
-            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-              Dual Digital Signatures (Mandatory)
-            </h4>
-            <p className="text-[11px] text-slate-500">
-              Interactive HTML5 touch/stylus signature pads for Store Keeper and Employee.
-            </p>
+            {selectedItem?.hasSize && (
+              <FormGroup label="Size / Variant Selection">
+                <Select value={formData.variantKey} onChange={e => setFormData({...formData, variantKey: e.target.value})} required>
+                  <option value="">Select Size / Variant...</option>
+                  {selectedItem.variantAttributeValueIds.map(val => (
+                    <option key={val} value={val}>{val}</option>
+                  ))}
+                </Select>
+              </FormGroup>
+            )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <SignaturePad
-              label={`Store Keeper: ${currentUser.name}`}
-              onSave={setStoreKeeperSignature}
-              required
-            />
-            <SignaturePad
-              label={`Recipient Employee: ${selectedEmployee?.name || 'Employee'}`}
-              onSave={setReceiverSignature}
-              required
-            />
-          </div>
-        </div>
+          {tracked ? (
+            <div className="mt-4 space-y-2">
+              <SerialPicker ppeItemId={formData.ppeItemId} locationId={formData.locationId} value={serialIds} onChange={setSerialIds} />
+              <p className="text-xs text-body">Quantity: <strong className="text-ink">{serialIds.length} {unitSymbol}</strong> (= serials picked)</p>
+            </div>
+          ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <FormGroup label="FIFO Recommended Batch (G14)">
+              <Select value={formData.batchNumber} onChange={e => setFormData({...formData, batchNumber: e.target.value})}>
+                <option value="">Select Batch...</option>
+                {availableBatches.map(b => (
+                  <option key={b.id} value={b.batchNumber}>
+                    {b.batchNumber} (Avail: {b.availableQty}) &middot; Exp: {format(new Date(b.expiryDate), 'yyyy-MM')}
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
 
-        <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 ">
-          <Button type="button" variant="secondary" onClick={() => navigate('/issuances')}>
+            <FormGroup label={`Quantity (${unitSymbol || '-'})`}>
+              <Input
+                type="number"
+                min="1"
+                value={formData.quantity}
+                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})}
+              />
+            </FormGroup>
+          </div>
+          )}
+
+          {expectedReplacementDate && (
+            <div className="mt-4 p-3 bg-canvas border border-border rounded flex items-center justify-between text-xs">
+              <span className="font-semibold text-body">Auto-Calculated Lifespan Replacement Due Date (Rule G5):</span>
+              <span className="font-bold text-accent font-mono text-sm">{expectedReplacementDate}</span>
+            </div>
+          )}
+        </FormSection>
+
+        {/* Digital Signatures Pad */}
+        <FormSection title="Dual Digital Signatures" description="Capture digital signatures for the Store Keeper and the recipient Employee.">
+          <div className="grid grid-cols-2 gap-6">
+            {/* Receiver Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Receiver Signature</div>
+              {formData.receiverSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={formData.receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveSigner('receiver')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('receiver')}>
+                  Tap to Sign (Receiver)
+                </Button>
+              )}
+            </div>
+
+            {/* Store Keeper Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Store Keeper Signature</div>
+              {formData.storeKeeperSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={formData.storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveSigner('storeKeeper')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('storeKeeper')}>
+                  Tap to Sign (Store Keeper)
+                </Button>
+              )}
+            </div>
+          </div>
+        </FormSection>
+
+        <div className="pt-4 flex justify-end gap-3 border-t border-border">
+          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={submitting || !!genderMatchError}>
-            Complete Single Issuance
+          <Button type="submit" disabled={!!issuanceError || !formData.receiverSignature || !formData.storeKeeperSignature}>
+            Complete Issuance
           </Button>
         </div>
       </form>
-      </ContainerCard>
+
+      {/* Signature Capture Modal */}
+      <SignatureModal
+        isOpen={!!activeSigner}
+        title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
+        onClose={() => setActiveSigner(null)}
+        onSave={(dataUrl) => {
+          if (activeSigner === 'receiver') setFormData(prev => ({ ...prev, receiverSignature: dataUrl }));
+          else setFormData(prev => ({ ...prev, storeKeeperSignature: dataUrl }));
+          setActiveSigner(null);
+        }}
+      />
     </div>
   );
 }

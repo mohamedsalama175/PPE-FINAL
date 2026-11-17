@@ -6,13 +6,12 @@ export interface BaseEntity {
   deletedAt?: string | null;
 }
 
-export type LocationType = 'Central Warehouse' | 'Site Store' | 'Department Store' | 'General';
+export type LocationType = 'Central Warehouse' | 'Site Store' | 'Department Store' | 'General' | 'Scrap' | 'Used';
 export type StockCondition = 'New' | 'Used' | 'Scrap';
 
 export interface Location extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   site: string;
   locationType: LocationType;
   stockCondition: StockCondition;
@@ -20,228 +19,226 @@ export interface Location extends BaseEntity {
   capacityUnits: number;
   address: string;
   assignedStoreKeeperIds: string[];
-  openingBalanceStatus: 'Open' | 'Closed';
-  hasHeldStock?: boolean;
+  openingBalanceClosed?: boolean;
 }
 
 export interface AttributeValue {
   id: string;
-  valueEn: string;
-  valueAr: string;
+  value: string;
   sortOrder: number;
-  active: boolean;
 }
 
 export interface Attribute extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   values: AttributeValue[];
 }
 
 export interface ItemGroup extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
-  assignedAttributeIds: string[];
-  requiresGenderMatch: boolean;
+  name: string;
+  attributeIds: string[];
+  requiresGenderMatch?: boolean;
 }
-
-export type RiskCategory = 'Category I' | 'Category II' | 'Category III';
-export type LifespanUnit = 'Days' | 'Months' | 'Years';
-export type UnitOfMeasure = 'Piece' | 'Pair' | 'Set' | 'Box' | string;
 
 export interface PPEItem extends BaseEntity {
   itemCode: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   photoUrl?: string;
   category: string;
   itemGroupId: string;
+  hasSize: boolean;
+  gender: 'Male' | 'Female' | 'Unisex';
+  lifespanType: 'Days' | 'Months' | 'Years';
   lifespanValue: number;
-  lifespanUnit: LifespanUnit;
-  uom: UnitOfMeasure;
-  descriptionEn: string;
-  descriptionAr: string;
+  description: string;
   manufacturer: string;
   model: string;
   standardCertification: string;
-  riskCategory: RiskCategory;
-  reorderLevels: Record<string, number>; // locationId -> reorder level
-  locationIds: string[]; // Assigned active non-scrap locations
-  assignedLocationIds?: string[]; // Alias for locationIds
-  itemCodeLocked?: boolean;
+  riskCategory: 'I' | 'II' | 'III';
+  reorderLevel: number;
+  locationIds: string[]; // Valid locations for this item
+  locationReorderLevels?: { locationId: string; reorderLevel: number }[]; // Reorder level per location (PPE-001)
+  variantAttributeValueIds: string[]; // default variants if applicable
+  unitId: string; // PPE-001 / PPE-051: reference to UnitOfMeasure.id
+  serialTracked: boolean; // PPE-001 / PPE-057: locked after the first transaction (PPE-002)
+}
+
+// Epic 11: Units of Measure (PPE-051 to PPE-056)
+export interface UnitOfMeasure extends BaseEntity {
+  code: string; // unique (case-insensitive, trashed included), one word, immutable after save
+  name: string; // English only (G13)
+  symbol: string; // short, shown next to quantities
+  createdAt: string;
+  createdBy: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+// Epic 12: Serial Numbers (PPE-057 to PPE-059)
+export type SerialStatus = 'In Stock' | 'Issued' | 'On Loan' | 'Scrapped' | 'Written off';
+export type SerialEventType = 'Stock in' | 'Transfer' | 'Issue' | 'Return' | 'Loan' | 'Loan return' | 'Scrap' | 'Write off';
+
+export interface SerialUnit {
+  id: string;
+  ppeItemId: string;
+  serial: string; // stored upper-case, unique per item
+  status: SerialStatus;
+  locationId?: string; // where the unit physically is (In Stock, or Scrapped at a Scrap location)
+  lastLocationId: string; // last physical location, used for Store Keeper scoping when issued or on loan
+  holderEmployeeId?: string; // when Issued
+  holderName?: string; // borrower name when On Loan
+  holderIssuanceId?: string; // issuance or loan that holds the unit
+  batchNumber?: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+// Append-only: never edited, never purged.
+export interface SerialEvent {
+  id: string;
+  serialUnitId: string;
+  type: SerialEventType;
+  date: string;
+  userId: string;
+  fromLocationId?: string;
+  toLocationId?: string;
+  reference?: string; // source document reference
+  holderEmployeeId?: string;
+  holderName?: string;
+  note?: string;
 }
 
 export interface KitItem {
   id: string;
   ppeItemId: string;
-  quantity: number;
-  qty?: number;
-  defaultVariant?: any;
+  qty: number;
+  variantKey?: string;
 }
 
 export interface Kit extends BaseEntity {
-  nameEn: string;
-  nameAr: string;
+  name: string;
   jobPositionId: string;
-  jobPosition?: string;
   items: KitItem[];
-  lineItems?: any[];
 }
 
 export interface JobPosition extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
 }
 
 export interface Employee extends BaseEntity {
   name: string;
   employeeCode: string;
   jobPositionId: string;
-  jobPosition?: string;
   role: Role;
-  email?: string;
-  photoUrl?: string;
-  site?: string;
-  department?: string;
-  status?: 'Active' | 'Terminated' | 'Transferred';
   gender?: 'Male' | 'Female';
-  supervisorId?: string;
-  lastReceivedSizes?: any;
-}
-
-export interface Batch {
-  id: string;
-  batchNumber: string;
-  ppeItemId: string;
-  locationId: string;
-  variantKey?: string; // e.g. "SIZE:L|COLOR:Yellow|GENDER:Male"
-  quantity: number; // On Hand quantity
-  availableQty: number; // On Hand - Quarantined
-  quarantinedQty: number;
-  condition: 'New' | 'Reused' | 'Scrapped';
-  expiryDate?: string;
-  manufacturerExpiryDate?: string;
-  costPerUnit?: number;
-  supplierDeliveryNote?: string;
-  status: 'Active' | 'Expiring Soon' | 'Expired' | 'Quarantined' | 'Depleted';
-  openingBalanceId?: string;
-  createdAt: string;
+  status?: 'Active' | 'Terminated' | 'Transferred' | 'Inactive';
+  department?: string;
+  site?: string;
+  supervisorId?: string; // For Direct Supervisor team scoping
 }
 
 export interface StockBalance {
-  id: string;
+  id: string; // surrogate key
   ppeItemId: string;
   locationId: string;
+  variantKey?: string; // stringified attributes
   quantityOnHand: number;
-  quarantinedQuantity: number;
-  availableQuantity: number;
+  quarantinedOnHand?: number;
 }
 
 export interface StockMovement {
   id: string;
-  type: 'in' | 'out' | 'transfer' | 'adjustment' | 'opening' | 'quarantine' | 'release_quarantine';
+  type: 'in' | 'out' | 'transfer' | 'adjustment' | 'opening';
   ppeItemId: string;
   locationId: string;
   toLocationId?: string;
-  batchNumber?: string;
-  variantKey?: string;
   quantity: number;
   reason: string;
   reference: string;
+  approvedBy?: string;
   createdBy: string;
   createdAt: string;
 }
 
 export interface StockAdjustment {
   id: string;
-  reference: string; // ADJ-OB-YYYY-NNNNN, ADJ-IN-YYYY-NNNNN, ADJ-OUT-YYYY-NNNNN
-  type: 'OB' | 'IN' | 'OUT';
+  reference: string;
+  type: 'IN' | 'OUT';
   ppeItemId: string;
   locationId: string;
-  batchNumber: string;
   variantKey?: string;
+  batchNumber: string;
   quantityDelta: number;
   reasonCategory: string;
-  reasonDetail: string;
-  quarantineReason?: string;
+  reason: string;
   manufacturerExpiryDate?: string;
   supplierDeliveryNote?: string;
+  destinationLocationId?: string; // Optional destination (e.g. Scrap location for damaged goods)
+  serialNumbers?: string[]; // PPE-057: Stock IN of a tracked item (registered on apply)
+  serialIds?: string[]; // PPE-058: Stock OUT of a tracked item (picked units)
   status: 'pending' | 'approved' | 'rejected' | 'applied';
   submittedBy: string;
   reviewedBy?: string;
   createdAt: string;
 }
 
+export interface LoanLineItem {
+  id: string;
+  ppeItemId: string;
+  quantity: number;
+  returnedQty?: number;
+  condition?: 'good' | 'damaged' | 'worn_out' | 'lost';
+  status: 'open' | 'returned';
+  serialIds?: string[]; // PPE-058: serial units on loan for a tracked item
+  returnedSerialIds?: string[];
+}
+
 export interface Issuance {
   id: string;
-  reference: string; // ISS-YYYY-NNNNN
-  employeeId?: string;
-  holderName?: string;
-  holderType?: 'Employee' | 'Visitor' | 'Contractor';
+  reference?: string;
+  employeeId?: string; 
+  holderName?: string; // for loan or visitor
+  holderType?: string; // 'Employee' | 'Visitor' | 'Contractor'
+  companyName?: string;
+  contactNumber?: string;
+  hostEmployeeId?: string;
   ppeItemId?: string;
   kitId?: string;
   locationId: string;
   quantity: number;
   batchNumber?: string;
-  variantKey?: string;
-  conditionAtIssue: 'New' | 'Reused';
+  variantKey?: string; // size/color selection
   issueDate: string;
-  expectedReplacementDate?: string;
   expectedReturnDate?: string;
-  replacesIssuanceId?: string;
-  storeKeeperSignature?: string; // base64 data url
-  receiverSignature?: string; // base64 data url
-  isImported?: boolean;
-  imported?: boolean;
-  status: 'issued' | 'returned' | 'scrapped' | 'lost';
+  expectedReplacementDate?: string; // Auto-calculated lifespan
+  replacesIssuanceId?: string; // PPE-034 / PPE-040 link to replaced issuance
+  storeKeeperSignature?: string; // data URI
+  receiverSignature?: string; // data URI
+  status: 'issued' | 'returned' | 'scrapped' | 'replaced' | 'partially_returned';
   issuedBy: string;
-  createdAt: string;
+  isLoan?: boolean;
+  isHistorical?: boolean;
+  lines?: LoanLineItem[];
+  serialIds?: string[]; // PPE-058: serial units issued on this issuance (tracked items)
+  returnedSerialIds?: string[];
 }
 
 export interface IssuanceReturn {
   id: string;
   issuanceId: string;
-  quantityReturned: number;
+  lineId?: string;
+  quantity?: number;
   condition: 'good' | 'damaged' | 'worn_out' | 'lost';
   physicalReceiptConfirmed?: boolean;
-  returnedToLocationId?: string;
+  autoScrapped: boolean;
   storeKeeperSignature?: string;
-  receiverSignature?: string;
+  employeeSignature?: string;
   returnedBy: string;
   returnDate: string;
-}
-
-export interface VisitorLoanItem {
-  id: string;
-  ppeItemId: string;
-  variantKey?: string;
-  batchNumber: string;
-  quantity: number;
-  returnedQuantity: number;
-  fromLocationId: string;
-  conditionOnReturn?: 'good' | 'damaged' | 'lost';
-  status?: 'Open' | 'Returned' | 'Damaged' | 'Lost';
-}
-
-export interface VisitorLoan {
-  id: string;
-  loanNumber: string; // LN-YYYY-NNNNN
-  recipientName: string;
-  recipientCompany: string;
-  hostEmployeeId: string;
-  issueDate: string;
-  expectedReturnDate: string;
-  fromLocationId: string;
-  status: 'Open' | 'Overdue' | 'Partially Returned' | 'Closed';
-  items: VisitorLoanItem[];
-  storeKeeperSignature?: string;
-  recipientSignature?: string;
-  receiverSignature?: string;
-  issuedBy: string;
-  createdAt: string;
 }
 
 export interface ScrapEntry {
@@ -251,7 +248,7 @@ export interface ScrapEntry {
   batchNumber?: string;
   quantity: number;
   reason: string;
-  relatedReferenceId?: string;
+  relatedReferenceId?: string; // issuanceId or stockMovementId
   reversed: boolean;
   reversedBy?: string;
   reversedAt?: string;
@@ -260,72 +257,74 @@ export interface ScrapEntry {
   createdAt: string;
 }
 
+export interface ModuleSettings {
+  generalLeadTimeDays: number;
+  categoryOverrides: { riskCategory: 'I' | 'II' | 'III'; leadTimeDays: number }[];
+  recentIssuanceWindowDays: number;
+  trashRetentionDays: number;
+  siteLeadTimes: { site: string; leadTimeDays: number }[];
+}
+
+export type ExpirySettings = ModuleSettings;
+
 export interface OpeningBalanceLine {
   id: string;
   ppeItemId: string;
   variantKey?: string;
   batchNumber: string;
   expiryDate?: string;
-  manufacturerExpiryDate?: string;
   quantity: number;
   costPerUnit?: number;
+  serialNumbers?: string[]; // PPE-057: one per unit for a tracked item; quantity = serialNumbers.length
 }
 
 export interface OpeningBalance {
   id: string;
-  reference: string; // ADJ-OB-YYYY-NNNNN
+  reference?: string; // ADJ-OB-YYYY-NNNNN (PPE-024)
   locationId: string;
   referenceDate: string;
   notes?: string;
-  status: 'Draft' | 'Approved';
+  status: 'Draft' | 'Pending Approval' | 'Approved' | 'Rejected';
   preparedBy: string;
+  approvedBy?: string;
+  rejectionReason?: string;
   lines: OpeningBalanceLine[];
+  createdAt: string;
+  submittedAt?: string;
+  approvedAt?: string;
+}
+
+export interface Batch {
+  id: string;
+  batchNumber: string;
+  ppeItemId: string;
+  locationId: string;
+  variantKey?: string;
+  quantity: number; // original quantity
+  availableQty: number; // currently available
+  quarantinedQty?: number;
+  isQuarantined?: boolean;
+  quarantineReason?: string;
+  expiryDate: string;
+  costPerUnit?: number;
+  status: 'Active' | 'Depleted' | 'Recalled' | 'Scrapped';
+  openingBalanceId?: string;
   createdAt: string;
 }
 
 export interface AuditLog {
   id: string;
-  timestampUTC: string;
-  user: string;
-  role: Role;
-  objectType: 'Item' | 'Attribute' | 'ItemGroup' | 'Location' | 'Kit' | 'Issuance' | 'Loan' | 'Stock' | 'Settings' | 'StoreKeeperAssignment' | string;
-  objectReference: string;
+  entityType?: 'OpeningBalance' | 'StockAdjustment' | 'Issuance' | 'Transfer' | 'Scrap' | 'Catalog' | 'Attribute' | 'ItemGroup' | 'Location' | 'Kit' | 'Settings';
+  entityId?: string;
   action: string;
-  beforeValues: any;
-  afterValues: any;
-  reason?: string;
-  source: 'Screen' | 'Import' | 'System Job';
-  retentionFlag: '7_YEARS';
-}
-
-export interface TrashItem {
-  id: string;
-  entityType: 'Item' | 'Attribute' | 'ItemGroup' | 'Location' | 'Kit';
-  originalId: string;
-  code: string;
-  nameEn: string;
-  nameAr: string;
-  deletedBy: string;
-  deletedAt: string;
-  reason: string;
-  hasHistory: boolean;
-  daysInTrash: number;
-  data: any;
-}
-
-export interface InAppNotification {
-  id: string;
-  type: 'low_stock' | 'replacement_reminder' | 'overdue_loan' | 'approval_request' | 'approval_decision' | 'trash_purge_warning';
-  title: string;
-  message: string;
+  details?: string;
+  performedBy: string;
   timestamp: string;
-  read: boolean;
-  severity: 'critical' | 'warning' | 'info';
-  linkTo?: string;
-}
-
-export interface ModuleSettings {
-  reminderLeadTimePerSite: Record<string, number>; // Site -> days (1 - 90, default 14)
-  recentIssuanceWindowDays: number; // default 90
-  trashRetentionDays: number; // default 90, min 30
+  // Enhanced G1 fields:
+  user?: string;
+  objectType?: string;
+  objectReference?: string;
+  reason?: string;
+  before?: any;
+  after?: any;
 }

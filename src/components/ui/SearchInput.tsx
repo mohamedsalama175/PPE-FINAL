@@ -12,10 +12,10 @@ export interface SearchInputProps {
 export function SearchInput({ className, ...props }: SearchInputProps) {
   return (
     <div className="relative">
-      <Search className="absolute start-2.5 top-2 h-4 w-4 text-body" />
+      <Search className="absolute left-2.5 top-2 h-4 w-4 text-body" />
       <Input
         type="search"
-        className={`ps-9 w-64 ${className || ''}`}
+        className={`pl-9 w-64 ${className || ''}`}
         {...props}
       />
     </div>

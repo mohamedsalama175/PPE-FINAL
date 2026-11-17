@@ -3,41 +3,34 @@ import { usePPEStore } from '../store/useStore';
 import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
 import { DataTable } from '../components/ui/DataTable';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { StatusBadge } from '../components/ui/StatusBadge';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useToastStore } from '../store/toastStore';
-import { useSwal } from '../lib/useSwal';
 import { Trash2 } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';
 
 export default function Scrap() {
   const { t, language } = useTranslation();
-  const { scrapEntries, currentUser, reverseScrap, ppeItems, locations } = usePPEStore();
+  const { scrapEntries, currentUser, reverseScrap, ppeItems, locations, getUnitSymbol } = usePPEStore();
   const addToast = useToastStore(s => s.addToast);
-  const { showDeleteReason } = useSwal();
 
   const canReverse = ['Admin', 'HSE Supervisor'].includes(currentUser.role);
   const REVERSAL_WINDOW_DAYS = 7;
 
-  const handleReverse = async (id: string, createdAt: string) => {
+  const handleReverse = (id: string, createdAt: string) => {
     const daysSinceScrap = differenceInDays(new Date(), new Date(createdAt));
     if (daysSinceScrap > REVERSAL_WINDOW_DAYS) {
       addToast(`Cannot reverse scrap entries older than ${REVERSAL_WINDOW_DAYS} days.`, 'error');
       return;
     }
 
-    const reason = await showDeleteReason(
-      "Reverse Scrap Entry",
-      "Please enter the operational reason for reversal (minimum 5 characters)..."
-    );
+    const reason = window.prompt("Please enter the reason for reversal:");
     if (!reason) {
       addToast('A reason is required to reverse a scrap entry.', 'error');
       return;
     }
 
-    reverseScrap(id, reason);
+    reverseScrap(id, reason, currentUser.id);
     addToast('Scrap entry reversed, stock restored.', 'success');
   };
 
@@ -46,10 +39,10 @@ export default function Scrap() {
   }, [scrapEntries]);
 
   return (
-    <div className="flex flex-col h-full space-y-4">
+    <div className="flex flex-col h-full">
       <PageHeader title={t('scrapAndReturns')} subtitle={`Reverse window: ${REVERSAL_WINDOW_DAYS} days`} />
       
-      <ContainerCard noPadding className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden bg-surface border border-border rounded-sm">
         <DataTable 
           data={sortedScraps}
           keyExtractor={(item) => item.id}
@@ -58,37 +51,30 @@ export default function Scrap() {
             { key: 'date', header: 'Date', render: (s) => format(new Date(s.createdAt), 'MMM d, yyyy') },
             { key: 'item', header: 'Item', render: (s) => {
               const item = ppeItems.find(p => p.id === s.ppeItemId);
-              return item ? (language === 'en' ? item.nameEn : item.nameAr) : s.ppeItemId;
+              return item ? item.name : s.ppeItemId;
             }},
             { key: 'location', header: 'Location', render: (s) => {
               const loc = locations.find(l => l.id === s.locationId);
-              return loc ? loc.nameEn : s.locationId;
+              return loc ? loc.name : s.locationId;
             }},
-            { key: 'qty', header: 'Qty', className: 'font-mono', render: (s) => s.quantity },
+            { key: 'qty', header: 'Qty', render: (s) => `${s.quantity} ${getUnitSymbol(s.ppeItemId)}` },
             { key: 'reason', header: 'Reason', render: (s) => s.reason },
             { key: 'status', header: 'Status', render: (s) => (
                s.reversed ? (
-                 <div className="flex flex-col gap-0.5">
-                   <StatusBadge status="neutral" label="Reversed" size="sm" icon={false} />
-                   {s.reversalReason && (
-                     <span className="text-[10px] text-slate-500 truncate max-w-[180px]" title={s.reversalReason}>
-                       {s.reversalReason}
-                     </span>
-                   )}
+                 <div className="flex flex-col">
+                   <span className="text-body italic text-xs">Reversed</span>
+                   {s.reversalReason && <span className="text-[10px] text-body">{s.reversalReason}</span>}
                  </div>
-               ) : (
-                 <StatusBadge status="danger" label="Scrapped" size="sm" />
-               )
+               ) : <span className="text-safety-red text-xs font-medium">Scrapped</span>
             )},
-            { key: 'actions', header: '', align: 'right', className: 'text-end', render: (s) => {
+            { key: 'actions', header: '', className: 'text-right', render: (s) => {
               if (!s.reversed && canReverse) {
                 const daysSinceScrap = differenceInDays(new Date(), new Date(s.createdAt));
                 const isWithinWindow = daysSinceScrap <= REVERSAL_WINDOW_DAYS;
                 
                 return (
                   <Button 
-                    variant="outline" 
-                    color="secondary"
+                    variant="secondary" 
                     size="sm" 
                     disabled={!isWithinWindow}
                     onClick={() => handleReverse(s.id, s.createdAt)}
@@ -102,7 +88,7 @@ export default function Scrap() {
             }}
           ]}
         />
-      </ContainerCard>
+      </div>
     </div>
-  );
+  )
 }

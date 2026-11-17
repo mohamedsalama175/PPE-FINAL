@@ -7,347 +7,352 @@ import { FilterBar } from '../components/ui/FilterBar';
 import { SearchInput } from '../components/ui/SearchInput';
 import { Select } from '../components/ui/Select';
 import { Button } from '../components/ui/Button';
-import { EmptyState } from '../components/ui/EmptyState';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { Modal } from '../components/ui/Modal';
-import { Textarea } from '../components/ui/Textarea';
 import { StatusBadge } from '../components/ui/StatusBadge';
-import { 
-  PackageSearch, AlertTriangle, ShieldAlert, CheckCircle2, 
-  RotateCcw, ArrowRightLeft, Plus, Lock, AlertOctagon, X
-} from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { Batch } from '../types';
+import { EmptyState } from '../components/ui/EmptyState';
+import { useToastStore } from '../store/toastStore';
+import { PackageSearch, ArrowRightLeft, ShieldAlert, CheckCircle2, AlertTriangle, Layers, X } from 'lucide-react';
+import { StockBalance, PPEItem, Location, Batch } from '../types';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { format } from 'date-fns';
 
 export default function Stock() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { 
-    currentUser, 
-    locations, 
-    ppeItems, 
-    batches, 
-    releaseQuarantine 
-  } = usePPEStore();
-
+  const { stockBalances, ppeItems, locations, batches, currentUser, quarantineBatch, releaseQuarantineBatch, getUnitSymbol, units } = usePPEStore();
+  const [searchParams] = useSearchParams();
+  const initialFilter = searchParams.get('filter');
+  const addToast = useToastStore(s => s.addToast);
+  
   const [search, setSearch] = React.useState('');
+  const [statusFilter, setStatusFilter] = React.useState(initialFilter || 'all');
   const [locationFilter, setLocationFilter] = React.useState('all');
-  const [statusFilter, setStatusFilter] = React.useState('all');
-  const [lowStockOnly, setLowStockOnly] = React.useState(false);
 
-  // Quarantine release modal state
-  const [quarantineModal, setQuarantineModal] = React.useState<{
-    isOpen: boolean;
-    batch: Batch | null;
-    reason: string;
-    error?: string;
-  }>({
-    isOpen: false,
-    batch: null,
-    reason: ''
-  });
+  // Quarantine Batch Inspection Modal
+  const [batchModal, setBatchModal] = React.useState<{ item: PPEItem; loc: Location } | null>(null);
+  const [quarantineReason, setQuarantineReason] = React.useState('');
+  const [quarantineQty, setQuarantineQty] = React.useState(1);
 
-  // Scoped locations based on RBAC (BD-I462)
   const isStoreKeeper = currentUser.role === 'Store Keeper';
-  const assignedLocations = React.useMemo(() => {
-    if (currentUser.role === 'Admin' || currentUser.role === 'HSE Supervisor') {
-      return locations.filter(l => l.active && !l.deletedAt);
-    }
-    return locations.filter(l => l.active && !l.deletedAt && l.assignedStoreKeeperIds.includes(currentUser.id));
-  }, [locations, currentUser]);
+  const myLocations = React.useMemo(() => {
+    return isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)).map(l => l.id) : [];
+  }, [currentUser.id, isStoreKeeper, locations]);
 
-  const isBlockedKeeper = isStoreKeeper && assignedLocations.length === 0;
+  const viewableLocations = isStoreKeeper ? locations.filter(l => myLocations.includes(l.id)) : locations;
 
-  // Flatten batches with Item and Location details
-  const stockRows = React.useMemo(() => {
-    if (isBlockedKeeper) return [];
+  const enrichedBalances = React.useMemo(() => {
+    return stockBalances.map(b => {
+      const item = ppeItems.find(i => i.id === b.ppeItemId);
+      const loc = locations.find(l => l.id === b.locationId);
+      const quarantined = b.quarantinedOnHand || 0;
+      const available = Math.max(0, b.quantityOnHand - quarantined);
+      
+      const locReorder = item?.locationReorderLevels?.find(lr => lr.locationId === b.locationId)?.reorderLevel;
+      const effectiveReorder = locReorder !== undefined ? locReorder : item?.reorderLevel;
 
-    const allowedLocIds = assignedLocations.map(l => l.id);
+      let status: 'inStock' | 'lowStock' | 'outOfStock' = 'inStock';
+      if (available === 0 && b.quantityOnHand === 0) status = 'outOfStock';
+      else if (effectiveReorder !== undefined && effectiveReorder > 0 && available < effectiveReorder) status = 'lowStock';
 
-    return batches
-      .filter(b => allowedLocIds.includes(b.locationId))
-      .map(b => {
-        const item = ppeItems.find(p => p.id === b.ppeItemId);
-        const loc = locations.find(l => l.id === b.locationId);
-        const reorderLevel = item?.reorderLevels[b.locationId] || 0;
-        const isLow = b.availableQty < reorderLevel && reorderLevel > 0;
-
-        return {
-          batch: b,
-          locationName: loc?.nameEn || b.locationId,
-          locationSite: loc?.site || 'Unknown',
-          locationCondition: loc?.stockCondition || 'New',
-          itemCode: item?.itemCode || 'Unknown',
-          itemName: item ? (language === 'en' ? item.nameEn : item.nameAr) : b.ppeItemId,
-          category: item?.category || 'General',
-          riskCategory: item?.riskCategory || 'Category I',
-          uom: item?.uom || 'Piece',
-          reorderLevel,
-          isLow
-        };
-      })
-      .filter(row => {
-        const matchSearch = row.itemCode.toLowerCase().includes(search.toLowerCase()) ||
-                            row.itemName.toLowerCase().includes(search.toLowerCase()) ||
-                            row.batch.batchNumber.toLowerCase().includes(search.toLowerCase());
-        const matchLoc = locationFilter === 'all' || row.batch.locationId === locationFilter;
-        const matchStatus = statusFilter === 'all' || row.batch.status === statusFilter;
-        const matchLow = !lowStockOnly || row.isLow;
-
-        return matchSearch && matchLoc && matchStatus && matchLow;
-      });
-  }, [batches, assignedLocations, ppeItems, locations, isBlockedKeeper, search, locationFilter, statusFilter, lowStockOnly, language]);
-
-  const handleOpenReleaseModal = (b: Batch) => {
-    setQuarantineModal({
-      isOpen: true,
-      batch: b,
-      reason: ''
+      return {
+        ...b,
+        item,
+        loc,
+        available,
+        quarantined,
+        effectiveReorder,
+        status
+      };
+    }).filter(b => {
+      if (isStoreKeeper && !myLocations.includes(b.locationId)) return false;
+      if (locationFilter !== 'all' && b.locationId !== locationFilter) return false;
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'out_of_stock' && b.status !== 'outOfStock') return false;
+        if (statusFilter === 'low_stock' && b.status !== 'lowStock') return false;
+        if (statusFilter === 'quarantined' && (b.quarantinedOnHand || 0) <= 0) return false;
+      }
+      if (search && b.item) {
+        const q = search.toLowerCase();
+        return b.item.itemCode.toLowerCase().includes(q) || b.item.name.toLowerCase().includes(q);
+      }
+      return true;
     });
-  };
+  }, [stockBalances, ppeItems, locations, isStoreKeeper, myLocations, locationFilter, statusFilter, search]);
 
-  const handleConfirmRelease = () => {
-    if (!quarantineModal.batch) return;
-    if (quarantineModal.reason.trim().length < 20) {
-      setQuarantineModal(prev => ({
-        ...prev,
-        error: 'Release justification requires a minimum of 20 characters.'
-      }));
+  const activeBatchesInModal = React.useMemo(() => {
+    if (!batchModal) return [];
+    return batches.filter(b => b.ppeItemId === batchModal.item.id && b.locationId === batchModal.loc.id);
+  }, [batchModal, batches]);
+
+  const handleApplyQuarantine = (batch: Batch) => {
+    if (ppeItems.find(p => p.id === batch.ppeItemId)?.serialTracked) {
+      addToast('Quarantine is not available for a serial-tracked item.', 'error');
       return;
     }
-
-    releaseQuarantine(quarantineModal.batch.id, quarantineModal.reason.trim());
-    setQuarantineModal({ isOpen: false, batch: null, reason: '' });
+    if (!quarantineReason || quarantineReason.length < 5) {
+      addToast('A valid reason (minimum 5 characters) is mandatory to quarantine a batch.', 'error');
+      return;
+    }
+    if (quarantineQty <= 0 || quarantineQty > batch.availableQty) {
+      addToast(`Quantity must be between 1 and ${batch.availableQty}.`, 'error');
+      return;
+    }
+    quarantineBatch(batch.id, quarantineQty, quarantineReason, currentUser.id);
+    addToast('Batch quantity quarantined successfully.', 'success');
+    setQuarantineReason('');
   };
 
-  if (isBlockedKeeper) {
+  const handleReleaseQuarantine = (batch: Batch) => {
+    const qQty = batch.quarantinedQty || 0;
+    if (qQty <= 0) return;
+    releaseQuarantineBatch(batch.id, qQty, currentUser.id);
+    addToast('Quarantine released and returned to available stock.', 'success');
+  };
+
+  if (isStoreKeeper && myLocations.length === 0) {
     return (
-      <ContainerCard className="p-8 text-center space-y-4 border-red-200 ">
-        <AlertOctagon className="w-12 h-12 text-red-600 mx-auto" />
-        <h2 className="text-base font-bold text-slate-900 ">Access Restricted (0 Assigned Locations)</h2>
-        <p className="text-xs text-slate-600 max-w-md mx-auto">
-          You are signed in as an Unassigned Store Keeper. In accordance with rule BD-I462, store keepers with zero assigned warehouses are blocked from stock management and inventory screens.
-        </p>
-      </ContainerCard>
+      <div>
+        <PageHeader title={t('stock')} />
+        <EmptyState 
+          icon={<PackageSearch />} 
+          title="No locations assigned" 
+          description="You must be assigned to at least one location to view stock." 
+        />
+      </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title={t('stock')}
-        subtitle="Batch-level inventory monitoring, quarantine management, and low-stock reorder triggers (BD-I466)"
-        action={
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => navigate('/stock/transfers/new')}>
-              <ArrowRightLeft className="w-3.5 h-3.5 me-1.5" /> Transfer Stock
-            </Button>
-            <Button size="sm" onClick={() => navigate('/stock/adjustments')}>
-              <Plus className="w-3.5 h-3.5 me-1.5" /> Stock Adjustments
-            </Button>
+    <div>
+      <PageHeader 
+        title={t('stock')} 
+        subtitle="Real-time multi-location stock on hand, available balances, and batch quarantine"
+        actions={
+          <div className="flex gap-2">
+            {['Admin', 'HSE Supervisor'].includes(currentUser.role) && (
+              <Button variant="secondary" onClick={() => navigate('/stock/opening-balances/new')}>Opening Balance</Button>
+            )}
+            <Button onClick={() => navigate('/stock/transfers/new')}><ArrowRightLeft className="w-4 h-4 mr-2" /> {t('transfer')}</Button>
           </div>
-        }
+        } 
       />
-
+      
       <FilterBar>
-        <SearchInput
-          placeholder="Search batch, code or item name..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+        <SearchInput 
+          placeholder={t('search')} 
+          value={search} 
+          onChange={(e) => setSearch(e.target.value)} 
         />
-        <Select value={locationFilter} onChange={e => setLocationFilter(e.target.value)} className="w-44">
-          <option value="all">All Accessible Locations</option>
-          {assignedLocations.map(l => (
-            <option key={l.id} value={l.id}>{l.nameEn} ({l.stockCondition})</option>
+        <Select value={locationFilter} onChange={e => setLocationFilter(e.target.value)} className="w-48">
+          <option value="all">All Locations</option>
+          {viewableLocations.map(l => (
+            <option key={l.id} value={l.id}>{l.name}</option>
           ))}
         </Select>
-        <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-36">
-          <option value="all">All Statuses</option>
-          <option value="Active">Active</option>
-          <option value="Quarantined">Quarantined</option>
-          <option value="Expiring Soon">Expiring Soon</option>
-          <option value="Expired">Expired</option>
-          <option value="Depleted">Depleted</option>
+        <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-44">
+          <option value="all">All Stock Statuses</option>
+          <option value="low_stock">Low Stock (≤ Reorder)</option>
+          <option value="out_of_stock">Out of Stock (0)</option>
+          <option value="quarantined">Has Quarantined</option>
         </Select>
-
-        <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 px-3 py-1.5 rounded-md cursor-pointer hover:bg-slate-50 transition-colors">
-          <input
-            type="checkbox"
-            checked={lowStockOnly}
-            onChange={e => setLowStockOnly(e.target.checked)}
-            className="rounded text-red-600 focus:ring-0"
-          />
-          <span className="flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-            Low Stock Only
-          </span>
-        </label>
       </FilterBar>
 
-      <ContainerCard noPadding className="overflow-hidden">
-        <DataTable
-          data={stockRows}
-          keyExtractor={(item) => item.batch.id}
-          emptyState={<EmptyState icon={<PackageSearch className="w-8 h-8 text-slate-400" />} title="No stock records match filters" />}
-          columns={[
-            {
-              key: 'location',
-              header: 'Location & Condition',
-              className: 'w-44',
-              render: (r) => (
-                <div>
-                  <span className="font-bold text-slate-900 block">{r.locationName}</span>
-                  <div className="mt-1">
-                    <StatusBadge
-                      status={r.locationCondition === 'New' ? 'success' : r.locationCondition === 'Used' ? 'info' : 'danger'}
-                      size="sm"
-                      label={`${r.locationCondition} Pool`}
-                    />
-                  </div>
-                </div>
-              )
-            },
-            {
-              key: 'item',
-              header: 'Equipment Item',
-              render: (r) => (
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono font-bold text-teal-700 ">{r.itemCode}</span>
-                    <span className="text-slate-400 ">•</span>
-                    <span className="font-bold text-slate-900 ">{r.itemName}</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 font-mono block">
-                    Variant: {r.batch.variantKey || 'Standard'} • Cat: {r.category}
-                  </span>
-                </div>
-              )
-            },
-            {
-              key: 'batchNumber',
-              header: 'Batch No & Expiry',
-              className: 'w-36 font-mono text-xs',
-              render: (r) => (
-                <div>
-                  <span className="font-bold text-slate-800 block">{r.batch.batchNumber}</span>
-                  <span className="text-[10px] text-slate-400 ">
-                    Exp: {r.batch.manufacturerExpiryDate || '—'}
-                  </span>
-                </div>
-              )
-            },
-            {
-              key: 'stockMath',
-              header: 'Stock Quantities (On Hand | Quarantined | Available)',
-              className: 'w-64 text-end',
-              render: (r) => (
-                <div className="space-y-0.5">
-                  <div className="flex items-center justify-end gap-2 text-xs font-mono">
-                    <span className="text-slate-500 " title="On Hand">{r.batch.quantity}</span>
-                    <span className="text-slate-300 ">|</span>
-                    <span className={`font-semibold ${r.batch.quarantinedQty > 0 ? 'text-amber-700 ' : 'text-slate-400 '}`} title="Quarantined">
-                      {r.batch.quarantinedQty}
-                    </span>
-                    <span className="text-slate-300 ">|</span>
-                    <span className="font-bold text-slate-900 text-sm" title="Available (On Hand - Quarantined)">
-                      {r.batch.availableQty}
-                    </span>
-                    <span className="text-[10px] text-slate-400 ">{r.uom}</span>
-                  </div>
-                  <span className="text-[10px] font-mono text-slate-400 block">
-                    Reorder Trigger: {r.reorderLevel} {r.uom}
-                  </span>
-                </div>
-              )
-            },
-            {
-              key: 'status',
-              header: 'Status & Watchlist',
-              className: 'w-36 text-center',
-              render: (r) => (
-                <div className="space-y-1 flex flex-col items-center">
-                  <StatusBadge
-                    status={
-                      r.batch.status === 'Quarantined' ? 'warning' :
-                      r.batch.status === 'Active' ? 'success' :
-                      r.batch.status === 'Expired' ? 'danger' : 'neutral'
-                    }
-                    label={r.batch.status}
-                  />
+      <DataTable 
+        data={enrichedBalances}
+        keyExtractor={(item) => item.id}
+        emptyState={<EmptyState icon={<PackageSearch />} title="No stock records found" />}
+        columns={[
+          { key: 'item', header: 'PPE Item', render: (b) => (
+            <div>
+              <div className="font-semibold text-ink">{b.item ? b.item.name : b.ppeItemId}</div>
+              <div className="text-xs font-mono text-body">{b.item?.itemCode} &middot; Reorder at {b.item?.reorderLevel} {getUnitSymbol(b.ppeItemId)}</div>
+            </div>
+          )},
+          { key: 'location', header: 'Location', render: (b) => (
+            <div>
+              <div className="font-medium text-ink">{b.loc ? b.loc.name : b.locationId}</div>
+              <div className="text-[11px] text-body">{b.loc?.site} &middot; {b.loc?.locationType}</div>
+            </div>
+          )},
+          { key: 'available', header: 'Available (G9)', render: (b) => (
+            <div className="text-center font-bold text-sm text-safety-green">
+              {b.available} <span className="text-[11px] font-normal text-body">{getUnitSymbol(b.ppeItemId)}</span>
+            </div>
+          )},
+          { key: 'quarantined', header: 'Quarantined', render: (b) => (
+            <div className="text-center font-bold text-sm text-safety-amber-signal">
+              {b.quarantined > 0 ? (
+                <span className="bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                  {b.quarantined} {getUnitSymbol(b.ppeItemId)}
+                </span>
+              ) : (
+                <span className="text-body font-normal">0</span>
+              )}
+            </div>
+          )},
+          { key: 'total', header: 'Total On Hand', render: (b) => (
+            <div className="text-right font-bold text-sm text-ink font-mono">
+              {b.quantityOnHand} {getUnitSymbol(b.ppeItemId)}
+            </div>
+          )},
+          { key: 'status', header: 'Status', render: (b) => (
+            <StatusBadge 
+              status={b.status === 'outOfStock' ? 'error' : b.status === 'lowStock' ? 'warning' : 'success'} 
+              label={b.status === 'outOfStock' ? 'Out of Stock' : b.status === 'lowStock' ? 'Low Stock' : 'In Stock'} 
+            />
+          )},
+          { key: 'actions', header: '', className: 'text-right', render: (b) => (
+            b.item && b.loc ? (
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => setBatchModal({ item: b.item!, loc: b.loc! })}
+                title="Inspect Batches & Quarantine"
+              >
+                <Layers className="w-3.5 h-3.5 mr-1" /> Batches
+              </Button>
+            ) : null
+          )}
+        ]}
+      />
 
-                  {r.isLow && (
-                    <StatusBadge status="danger" size="sm" pulse>
-                      <AlertTriangle className="w-2.5 h-2.5 me-0.5 inline" />
-                      Low Stock
-                    </StatusBadge>
-                  )}
-                </div>
-              )
-            },
-            {
-              key: 'actions',
-              header: '',
-              className: 'w-32 text-end',
-              render: (r) => (
-                <div className="flex items-center justify-end gap-1">
-                  {r.batch.quarantinedQty > 0 && (
+      {/* Batch & Quarantine Inspection Modal (G9) */}
+      {batchModal && (
+        <div className="fixed inset-0 bg-ink/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface rounded-lg shadow-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden border border-border flex flex-col">
+            <div className="flex justify-between items-center px-6 py-4 border-b border-border bg-canvas">
+              <div>
+                <h3 className="font-bold text-ink text-sm">
+                  Batches & Quarantine Management: {batchModal.item.name}
+                </h3>
+                <p className="text-xs text-body mt-0.5">
+                  Location: <span className="font-semibold text-ink">{batchModal.loc.name}</span>
+                </p>
+              </div>
+              <button onClick={() => setBatchModal(null)} className="text-body hover:text-ink">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 overflow-y-auto">
+              <div className="border border-border rounded overflow-hidden">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-canvas border-b border-border text-body uppercase font-bold">
+                    <tr>
+                      <th className="p-2.5">Batch #</th>
+                      <th className="p-2.5">Expiry Date</th>
+                      <th className="p-2.5 text-right">Available</th>
+                      <th className="p-2.5 text-right">Quarantined</th>
+                      <th className="p-2.5 text-right">Cost/Unit</th>
+                      <th className="p-2.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {activeBatchesInModal.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="p-4 text-center text-body italic">
+                          No active batch records found for this item at this location.
+                        </td>
+                      </tr>
+                    ) : (
+                      activeBatchesInModal.map((b) => (
+                        <tr key={b.id} className="hover:bg-canvas/50">
+                          <td className="p-2.5 font-mono font-bold text-ink">{b.batchNumber}</td>
+                          <td className="p-2.5">{format(new Date(b.expiryDate), 'yyyy-MM-dd')}</td>
+                          <td className="p-2.5 text-right font-bold text-safety-green">{b.availableQty}</td>
+                          <td className="p-2.5 text-right font-bold text-safety-amber-signal">
+                            {b.quarantinedQty || 0}
+                            {b.quarantineReason && (
+                              <div className="text-[10px] text-body italic font-normal">{b.quarantineReason}</div>
+                            )}
+                          </td>
+                          <td className="p-2.5 text-right font-mono">{b.costPerUnit ? `EGP ${b.costPerUnit.toFixed(2)}` : '-'}</td>
+                          <td className="p-2.5 text-right">
+                            {(b.quarantinedQty || 0) > 0 && (
+                              <Button 
+                                size="sm" 
+                                variant="secondary"
+                                className="text-[11px] h-7 px-2"
+                                onClick={() => handleReleaseQuarantine(b)}
+                              >
+                                Release
+                              </Button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Quarantine Action Form */}
+              {activeBatchesInModal.some(b => b.availableQty > 0) && (
+                <div className="bg-canvas p-4 rounded border border-border">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-body mb-3 flex items-center gap-1.5">
+                    <ShieldAlert className="w-4 h-4 text-safety-amber-signal" />
+                    Quarantine Stock Batch (Rule G9)
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-body mb-1">Target Batch</label>
+                      <select 
+                        id="targetBatchSelect"
+                        className="w-full text-xs p-2 rounded border border-border bg-surface"
+                      >
+                        {activeBatchesInModal.filter(b => b.availableQty > 0).map(b => (
+                          <option key={b.id} value={b.id}>
+                            {b.batchNumber} (Avail: {b.availableQty})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-body mb-1">Qty to Quarantine</label>
+                      <input 
+                        type="number"
+                        min="1"
+                        value={quarantineQty}
+                        onChange={e => setQuarantineQty(parseInt(e.target.value, 10) || 1)}
+                        className="w-full text-xs p-2 rounded border border-border bg-surface"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-body mb-1">Mandatory Reason</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Quality inspection hold..."
+                        value={quarantineReason}
+                        onChange={e => setQuarantineReason(e.target.value)}
+                        className="w-full text-xs p-2 rounded border border-border bg-surface"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-3 flex justify-end">
                     <Button 
                       size="sm" 
-                      variant="outline"
-                      color="warning"
-                      onClick={() => handleOpenReleaseModal(r.batch)}
-                      className="text-[10px] h-7 px-2"
+                      variant="danger"
+                      onClick={() => {
+                        const selectEl = document.getElementById('targetBatchSelect') as HTMLSelectElement;
+                        const bId = selectEl?.value;
+                        const targetBatch = activeBatchesInModal.find(b => b.id === bId);
+                        if (targetBatch) handleApplyQuarantine(targetBatch);
+                      }}
                     >
-                      <RotateCcw className="w-3 h-3 me-1" /> Release
+                      Quarantine Selected Batch
                     </Button>
-                  )}
+                  </div>
                 </div>
-              )
-            }
-          ]}
-        />
-      </ContainerCard>
+              )}
+            </div>
 
-      {/* Release Quarantine Modal (NEW-03) */}
-      <Modal
-        opened={quarantineModal.isOpen && !!quarantineModal.batch}
-        onClose={() => setQuarantineModal({ isOpen: false, batch: null, reason: '' })}
-        title="Release Batch from Quarantine (NEW-03)"
-        icon={<RotateCcw className="w-5 h-5 text-amber-500" />}
-        footer={
-          <div className="flex items-center justify-end gap-2">
-            <Button 
-              variant="secondary" 
-              size="sm" 
-              onClick={() => setQuarantineModal({ isOpen: false, batch: null, reason: '' })}
-            >
-              Cancel
-            </Button>
-            <Button size="sm" onClick={handleConfirmRelease}>
-              Confirm Release
-            </Button>
+            <div className="px-6 py-3 border-t border-border bg-canvas flex justify-end">
+              <Button size="sm" variant="secondary" onClick={() => setBatchModal(null)}>
+                Close
+              </Button>
+            </div>
           </div>
-        }
-      >
-        {quarantineModal.batch && (
-          <div className="space-y-4">
-            <p className="text-xs text-slate-600 ">
-              You are releasing <strong>{quarantineModal.batch.quarantinedQty} units</strong> of Batch{' '}
-              <strong>{quarantineModal.batch.batchNumber}</strong> back into active available stock.
-            </p>
-
-            <Textarea
-              label="Release Justification Reason (Min 20 characters)"
-              required
-              rows={3}
-              value={quarantineModal.reason}
-              onChange={e => setQuarantineModal(prev => ({ ...prev, reason: e.target.value, error: undefined }))}
-              placeholder="State the technical inspection results or manufacturer clearance justifying release..."
-              error={quarantineModal.error}
-            />
-          </div>
-        )}
-      </Modal>
+        </div>
+      )}
     </div>
   );
 }

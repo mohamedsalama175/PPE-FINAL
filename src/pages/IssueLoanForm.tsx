@@ -1,413 +1,369 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePPEStore } from '../store/useStore';
-import { useTranslation } from '../i18n/useTranslation';
 import { PageHeader } from '../components/layout/PageHeader';
-import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
+import { FormSection, FormGroup } from '../components/ui/FormSection';
 import { Select } from '../components/ui/Select';
-import { ContainerCard } from '../components/ui/ContainerCard';
-import { DatePicker } from '../components/ui/DatePicker';
-import { SignaturePad } from '../components/ui/SignaturePad';
+import { Input } from '../components/ui/Input';
+import { Button } from '../components/ui/Button';
+import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
 import { format, addDays } from 'date-fns';
-import { Plus, X, ShieldAlert, AlertOctagon, User, Building, Clock, Check } from 'lucide-react';
-import { VisitorLoanItem } from '../types';
+import { useTranslation } from '../i18n/useTranslation';
+import { Plus, Trash2, Clock, ShieldAlert } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
+
+interface LoanItemLine {
+  id: string;
+  ppeItemId: string;
+  quantity: number;
+  batchNumber?: string;
+  serialIds?: string[]; // PPE-058: tracked item, quantity = serials picked
+}
 
 export default function IssueLoanForm() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
+  const { ppeItems, locations, employees, currentUser, issueLoan, batches, stockBalances, units, inStockSerials, serialUnits } = usePPEStore();
+  const itemOf = (id: string) => ppeItems.find(p => p.id === id);
+  const sym = (id: string) => units.find(u => u.id === itemOf(id)?.unitId)?.symbol || '';
   const addToast = useToastStore(s => s.addToast);
 
-  const { 
-    ppeItems, 
-    locations, 
-    employees, 
-    currentUser, 
-    batches, 
-    issueVisitorLoan 
-  } = usePPEStore();
-
   const isStoreKeeper = currentUser.role === 'Store Keeper';
-  const assignedLocations = React.useMemo(() => {
-    if (currentUser.role === 'Admin' || currentUser.role === 'HSE Supervisor') {
-      return locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap');
-    }
-    return locations.filter(l => l.active && !l.deletedAt && l.stockCondition !== 'Scrap' && l.assignedStoreKeeperIds.includes(currentUser.id));
-  }, [locations, currentUser]);
+  const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
 
-  const isBlockedKeeper = isStoreKeeper && assignedLocations.length === 0;
+  // PPE-036: From Location defaults to a Used-flag location
+  const defaultLocation = React.useMemo(() => {
+    return myLocations.find(l => l.stockCondition === 'Used' || l.locationType === 'Used') || myLocations[0];
+  }, [myLocations]);
 
-  // Header fields
-  const [recipientName, setRecipientName] = React.useState('');
-  const [recipientCompany, setRecipientCompany] = React.useState('');
+  const [holderName, setHolderName] = React.useState('');
+  const [holderType, setHolderType] = React.useState<'Visitor' | 'Contractor' | 'Temporary Staff'>('Visitor');
+  const [companyName, setCompanyName] = React.useState('');
+  const [contactNumber, setContactNumber] = React.useState('');
   const [hostEmployeeId, setHostEmployeeId] = React.useState(employees[0]?.id || '');
-  const [issueDate, setIssueDate] = React.useState(format(new Date(), 'yyyy-MM-dd'));
-  const [expectedReturnDate, setExpectedReturnDate] = React.useState(format(addDays(new Date(), 3), 'yyyy-MM-dd'));
+  const [locationId, setLocationId] = React.useState(defaultLocation?.id || myLocations[0]?.id || '');
+  const [expectedReturnDate, setExpectedReturnDate] = React.useState(format(addDays(new Date(), 1), 'yyyy-MM-dd'));
 
-  // Multi-line item grid (BD-I470)
-  // Default to Used-condition location if exists at user's site
- const defaultUsedLoc = assignedLocations.find(l => l.stockCondition === 'Used') || assignedLocations[0];
+  // Multi-line loan items (PPE-036)
+  const [lines, setLines] = React.useState<LoanItemLine[]>([
+    { id: '1', ppeItemId: ppeItems[0]?.id || '', quantity: 1 }
+  ]);
 
- const [items, setItems] = React.useState<Array<{
- id: string;
- ppeItemId: string;
- variantKey: string;
- quantity: number;
- fromLocationId: string;
- batchNumber: string;
- }>>([
- {
- id: '1',
- ppeItemId: ppeItems[0]?.id || '',
- variantKey: 'Standard',
- quantity: 1,
- fromLocationId: defaultUsedLoc?.id || '',
- batchNumber: ''
- }
- ]);
+  // Signatures
+  const [receiverSignature, setReceiverSignature] = React.useState('');
+  const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
+  const [activeSigner, setActiveSigner] = React.useState<'receiver' | 'storeKeeper' | null>(null);
 
- // Dual canvas signatures
- const [storeKeeperSignature, setStoreKeeperSignature] = React.useState('');
- const [receiverSignature, setReceiverSignature] = React.useState('');
- const [submitting, setSubmitting] = React.useState(false);
+  const handleAddLine = () => {
+    setLines(prev => [
+      ...prev,
+      { id: String(Date.now()), ppeItemId: ppeItems[0]?.id || '', quantity: 1 }
+    ]);
+  };
 
- // Auto-find batch when item and location are selected
- React.useEffect(() => {
- setItems(prev => prev.map(line => {
- if (!line.batchNumber && line.ppeItemId && line.fromLocationId) {
- const matchingBatch = batches.find(b => 
- b.ppeItemId === line.ppeItemId && 
- b.locationId === line.fromLocationId && 
- b.availableQty >= line.quantity && 
- b.status === 'Active'
- );
- return matchingBatch ? { ...line, batchNumber: matchingBatch.batchNumber } : line;
- }
- return line;
- }));
- }, [items, batches]);
+  const handleRemoveLine = (id: string) => {
+    if (lines.length <= 1) return;
+    setLines(prev => prev.filter(l => l.id !== id));
+  };
 
- const handleAddLine = () => {
- setItems(prev => [
- ...prev,
- {
- id: String(Date.now()),
- ppeItemId: ppeItems[0]?.id || '',
- variantKey: 'Standard',
- quantity: 1,
- fromLocationId: defaultUsedLoc?.id || '',
- batchNumber: ''
- }
- ]);
- };
+  const handleLineChange = (id: string, field: keyof LoanItemLine, value: any) => {
+    setLines(prev => prev.map(l => {
+      if (l.id !== id) return l;
+      const next = { ...l, [field]: value };
+      if (field === 'ppeItemId') next.serialIds = [];
+      if (field === 'serialIds') next.quantity = (value as string[]).length;
+      return next;
+    }));
+  };
+  // a new location means new serial choices
+  React.useEffect(() => { setLines(prev => prev.map(l => ({ ...l, serialIds: [] }))); }, [locationId]);
 
- const handleRemoveLine = (id: string) => {
- if (items.length <= 1) return;
- setItems(prev => prev.filter(i => i.id !== id));
- };
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!holderName) {
+      addToast('Recipient name is required.', 'error');
+      return;
+    }
+    if (lines.length === 0) {
+      addToast('At least one item line must be added.', 'error');
+      return;
+    }
 
- const handleSubmit = (e: React.FormEvent) => {
- e.preventDefault();
-
- if (!recipientName.trim() || !recipientCompany.trim() || !hostEmployeeId) {
- addToast('Please complete all visitor/contractor header details.', 'error');
- return;
- }
-
- if (new Date(expectedReturnDate) < new Date(issueDate)) {
- addToast('Expected return date cannot precede issue date.', 'error');
- return;
- }
-
- // Validate lines
- for (const line of items) {
- if (!line.ppeItemId || !line.fromLocationId || line.quantity <= 0) {
- addToast('Please complete all line item fields.', 'error');
- return;
- }
- const available = batches
- .filter(b => b.ppeItemId === line.ppeItemId && b.locationId === line.fromLocationId && b.status === 'Active')
-        .reduce((sum, b) => sum + b.availableQty, 0);
-
-      if (available < line.quantity) {
-        const ppe = ppeItems.find(p => p.id === line.ppeItemId);
-        addToast(`Insufficient stock for ${ppe?.nameEn || 'item'} at selected location.`, 'error');
+    // Check stock for each line
+    for (const line of lines) {
+      if (itemOf(line.ppeItemId)?.serialTracked && !(line.serialIds || []).length) {
+        addToast(`Pick the serial numbers for ${itemOf(line.ppeItemId)?.name}.`, 'error');
+        return;
+      }
+      const bal = stockBalances.find(b => b.ppeItemId === line.ppeItemId && b.locationId === locationId);
+      const avail = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
+      if (avail < line.quantity) {
+        const item = ppeItems.find(p => p.id === line.ppeItemId);
+        addToast(`Insufficient stock for ${item?.name || 'item'} at this location (Available: ${avail}).`, 'error');
         return;
       }
     }
 
-    if (!storeKeeperSignature || !receiverSignature) {
-      addToast('Dual digital signatures (Store Keeper & Recipient) are required.', 'error');
+    if (!receiverSignature || !storeKeeperSignature) {
+      addToast('Both digital signatures are mandatory for loan custody transfer.', 'error');
       return;
     }
 
-    setSubmitting(true);
-    const loanLines: VisitorLoanItem[] = items.map((line, idx) => {
-      const matchBatch = batches.find(b => 
-        b.ppeItemId === line.ppeItemId && 
-        b.locationId === line.fromLocationId && 
-        b.availableQty >= line.quantity && 
-        b.status === 'Active'
-      );
+    // Assign FIFO batches
+    const itemsWithBatches = lines.map(line => {
+      const batch = batches
+        .filter(b => b.ppeItemId === line.ppeItemId && b.locationId === locationId && b.availableQty >= line.quantity && b.status === 'Active')
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
 
+      const tracked = itemOf(line.ppeItemId)?.serialTracked;
       return {
-        id: `loan-item-${Date.now()}-${idx}`,
         ppeItemId: line.ppeItemId,
-        variantKey: line.variantKey,
-        quantity: line.quantity,
-        returnedQuantity: 0,
-        fromLocationId: line.fromLocationId,
-        batchNumber: matchBatch ? matchBatch.batchNumber : `BATCH-LOAN-${line.id}`,
-        status: 'Open' as const
+        quantity: tracked ? (line.serialIds || []).length : line.quantity,
+        batchNumber: tracked ? undefined : batch?.batchNumber,
+        serialIds: tracked ? line.serialIds : undefined
       };
     });
 
-    const loanNum = issueVisitorLoan({
-      recipientName: recipientName.trim(),
-      recipientCompany: recipientCompany.trim(),
+    const res = issueLoan({
+      holderName,
+      holderType,
+      companyName,
+      contactNumber,
       hostEmployeeId,
-      issueDate,
-      expectedReturnDate,
-      fromLocationId: defaultUsedLoc?.id || assignedLocations[0]?.id || '',
-      items: loanLines,
+      locationId,
+      expectedReturnDate: new Date(expectedReturnDate).toISOString(),
+      items: itemsWithBatches,
       storeKeeperSignature,
-      recipientSignature: receiverSignature,
-      issuedBy: currentUser.name
+      receiverSignature,
+      issuedBy: currentUser.id
     });
-    setSubmitting(false);
 
-    addToast(`Visitor Loan issued successfully (${loanNum}).`, 'success');
-    navigate('/issuances/open-loans');
+    if (!res.success) {
+      addToast(res.message || 'Loan failed.', 'error');
+      return;
+    }
+    if (res.success) {
+      addToast(`Temporary Loan issued successfully (${res.reference}) (PPE-036).`, 'success');
+      navigate('/issuances/open-loans');
+    }
   };
 
-  if (isBlockedKeeper) {
-    return (
-      <ContainerCard className="p-8 text-center space-y-4 border-red-200 ">
-        <AlertOctagon className="w-12 h-12 text-red-600 mx-auto" />
-        <h2 className="text-base font-bold text-slate-900 ">Access Restricted</h2>
-        <p className="text-xs text-slate-600 max-w-md mx-auto">
-          In accordance with rule BD-I462, store keepers with zero assigned warehouses are blocked from issuing visitor loans.
-        </p>
-      </ContainerCard>
-    );
-  }
-
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-3xl space-y-6 pb-20">
       <PageHeader
-        title="Issue PPE as a Loan to Visitor / Contractor"
-        subtitle="Temporary multi-line issuance with host employee tracking, default Used-pool routing, and LN-YYYY-NNNNN reference (BD-I470)"
+        title="Issue Temporary PPE Loan (PPE-036)"
+        subtitle="Multi-line temporary custody issuance for visitors, contractors, and staff with expected return tracking"
+        onBack={() => navigate('/issuances')}
       />
 
-      <ContainerCard className="p-6">
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Recipient & Host Details */}
-          <div className="space-y-4 border-b border-slate-100 pb-5">
-            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-              <User className="w-4 h-4 text-blue-600" /> Recipient & Host Information
-            </h4>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <FormSection title="Recipient & Host Details">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormGroup label="Recipient Full Name">
+              <Input
+                value={holderName}
+                onChange={e => setHolderName(e.target.value)}
+                required
+                placeholder="e.g. Michael Smith"
+              />
+            </FormGroup>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Recipient Full Name <span className="text-red-500">*</span>
-                </label>
-                <Input
-                  placeholder="e.g. David Miller"
-                  value={recipientName}
-                  onChange={e => setRecipientName(e.target.value)}
-                  required
-                />
-              </div>
+            <FormGroup label="Recipient Classification">
+              <Select value={holderType} onChange={e => setHolderType(e.target.value as any)}>
+                <option value="Visitor">Visitor</option>
+                <option value="Contractor">Contractor</option>
+                <option value="Temporary Staff">Temporary Staff</option>
+              </Select>
+            </FormGroup>
+          </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Recipient Company / Organization <span className="text-red-500">*</span>
-                </label>
-                <Input
-                  placeholder="e.g. Apex Industrial Audit Corp"
-                  value={recipientCompany}
-                  onChange={e => setRecipientCompany(e.target.value)}
-                  required
-                />
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <FormGroup label="Company / Employer Name">
+              <Input
+                value={companyName}
+                onChange={e => setCompanyName(e.target.value)}
+                placeholder="e.g. PetroChem Services"
+              />
+            </FormGroup>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Host Employee (Internal Contact) <span className="text-red-500">*</span>
-                </label>
-                <Select value={hostEmployeeId} onChange={e => setHostEmployeeId(e.target.value)} required>
-                  {employees
-                    .filter(e => e.status === 'Active')
-                    .map(e => (
-                      <option key={e.id} value={e.id}>
-                        {e.name} ({e.jobPosition || e.jobPositionId} — {e.site})
+            <FormGroup label="Contact Phone Number">
+              <Input
+                value={contactNumber}
+                onChange={e => setContactNumber(e.target.value)}
+                placeholder="+20 100 123 4567"
+              />
+            </FormGroup>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <FormGroup label="Host Employee (Internal Sponsor)">
+              <Select value={hostEmployeeId} onChange={e => setHostEmployeeId(e.target.value)}>
+                {employees.filter(e => e.active).map(emp => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.employeeCode})
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
+
+            <FormGroup label="Issuing Location">
+              <Select value={locationId} onChange={e => setLocationId(e.target.value)}>
+                {myLocations.map(l => (
+                  <option key={l.id} value={l.id}>{l.name} ({l.site})</option>
+                ))}
+              </Select>
+            </FormGroup>
+          </div>
+
+          <div className="mt-4">
+            <FormGroup label="Expected Return Date">
+              <Input
+                type="date"
+                value={expectedReturnDate}
+                onChange={e => setExpectedReturnDate(e.target.value)}
+                required
+                min={format(new Date(), 'yyyy-MM-dd')}
+                className="w-48"
+              />
+            </FormGroup>
+          </div>
+        </FormSection>
+
+        {/* Multi-Line Items (PPE-036) */}
+        <FormSection
+          title="Loan Equipment Lines (Multi-Item PPE-036)"
+          description="Add multiple items to be issued together on this single loan voucher."
+        >
+          <div className="space-y-3">
+            {lines.map((line, index) => (
+              <div key={line.id} className="space-y-2">
+              <div className="p-3 bg-canvas border border-border rounded flex flex-wrap sm:flex-nowrap items-center gap-3">
+                <span className="text-xs font-bold text-body font-mono w-6">#{index + 1}</span>
+                <div className="flex-1">
+                  <Select
+                    value={line.ppeItemId}
+                    onChange={e => handleLineChange(line.id, 'ppeItemId', e.target.value)}
+                  >
+                    {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.itemCode})
                       </option>
                     ))}
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              <div>
-                <DatePicker
-                  label="Issue Date"
-                  required
-                  value={issueDate}
-                  onChange={(_, dateStr) => setIssueDate(dateStr)}
-                />
-              </div>
-
-              <div>
-                <DatePicker
-                  label="Expected Return Date"
-                  required
-                  value={expectedReturnDate}
-                  minDate={issueDate}
-                  onChange={(_, dateStr) => setExpectedReturnDate(dateStr)}
-                />
-              </div>
-          </div>
-        </div>
-
-        {/* Multi-line Loan Grid */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                Loan Line Items
-              </h4>
-              <p className="text-[11px] text-slate-500">
-                Defaults to Used-condition locations to preserve new stock for permanent employees.
-              </p>
-            </div>
-            <Button type="button" variant="secondary" size="sm" onClick={handleAddLine}>
-              <Plus className="w-3.5 h-3.5 me-1" /> Add Loan Item
-            </Button>
-          </div>
-
-          <div className="border border-slate-200 rounded-lg overflow-hidden">
-            <table className="w-full text-xs text-start">
-              <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
-                <tr>
-                  <th className="p-2.5">PPE Item</th>
-                  <th className="p-2.5">Variant</th>
-                  <th className="p-2.5 w-24">Quantity</th>
-                  <th className="p-2.5">From Location</th>
-                  <th className="p-2.5 w-12 text-center"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {items.map(line => (
-                  <tr key={line.id} className="hover:bg-slate-50">
-                    <td className="p-2.5">
-                      <Select
-                        value={line.ppeItemId}
-                        onChange={e => {
-                          const val = e.target.value;
-                          setItems(prev => prev.map(l => l.id === line.id ? { ...l, ppeItemId: val, batchNumber: '' } : l));
-                        }}
-                      >
-                        {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
-                          <option key={p.id} value={p.id}>
-                            {p.itemCode} — {p.nameEn}
-                          </option>
-                        ))}
-                      </Select>
-                    </td>
-
-                    <td className="p-2.5">
-                      <Input
-                        value={line.variantKey}
-                        onChange={e => {
-                          const val = e.target.value;
-                          setItems(prev => prev.map(l => l.id === line.id ? { ...l, variantKey: val } : l));
-                        }}
-                        placeholder="e.g. Size M"
-                      />
-                    </td>
-
-                    <td className="p-2.5">
+                  </Select>
+                </div>
+                <div className="w-28 flex items-center gap-1">
+                  {itemOf(line.ppeItemId)?.serialTracked ? (
+                    <span className="text-xs font-bold" title="Quantity = serials picked">{(line.serialIds || []).length} {sym(line.ppeItemId)}</span>
+                  ) : (
+                    <>
                       <Input
                         type="number"
-                        min={1}
+                        min="1"
                         value={line.quantity}
-                        onChange={e => {
-                          const val = parseInt(e.target.value) || 1;
-                          setItems(prev => prev.map(l => l.id === line.id ? { ...l, quantity: val } : l));
-                        }}
+                        onChange={e => handleLineChange(line.id, 'quantity', parseInt(e.target.value, 10) || 1)}
+                        aria-label="Quantity"
                       />
-                    </td>
+                      <span className="text-xs text-body">{sym(line.ppeItemId)}</span>
+                    </>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-safety-red hover:bg-safety-red/10"
+                  onClick={() => handleRemoveLine(line.id)}
+                  disabled={lines.length <= 1}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </div>
+              {itemOf(line.ppeItemId)?.serialTracked && (
+                <SerialPicker
+                  ppeItemId={line.ppeItemId}
+                  candidates={inStockSerials(line.ppeItemId, locationId).filter(u => !lines.some(o => o.id !== line.id && o.serialIds?.includes(u.id)))}
+                  value={line.serialIds || []}
+                  onChange={ids => handleLineChange(line.id, 'serialIds', ids)}
+                />
+              )}
+              </div>
+            ))}
 
-                    <td className="p-2.5">
-                      <Select
-                        value={line.fromLocationId}
-                        onChange={e => {
-                          const val = e.target.value;
-                          setItems(prev => prev.map(l => l.id === line.id ? { ...l, fromLocationId: val, batchNumber: '' } : l));
-                        }}
-                      >
-                        {assignedLocations.map(l => (
-                          <option key={l.id} value={l.id}>
-                            {l.code} ({l.stockCondition})
-                          </option>
-                        ))}
-                      </Select>
-                    </td>
-
-                    <td className="p-2.5 text-center">
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveLine(line.id)}
-                        disabled={items.length <= 1}
-                        className={`text-slate-400 hover:text-red-600 ${items.length <= 1 ? 'opacity-30 cursor-not-allowed' : ''}`}
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Button type="button" variant="secondary" size="sm" onClick={handleAddLine} className="mt-2">
+              <Plus className="w-4 h-4 mr-1.5" /> Add Another Item Line
+            </Button>
           </div>
-        </div>
+        </FormSection>
 
-        {/* Dual Canvas Signatures */}
-        <div className="border-t border-slate-100 pt-4 space-y-4">
-          <div>
-            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-              Dual Digital Signatures (Mandatory)
-            </h4>
-            <p className="text-[11px] text-slate-500">
-              Interactive HTML5 touch/stylus signature pads for Store Keeper and Visitor/Contractor.
-            </p>
+        {/* Digital Signatures Pad */}
+        <FormSection title="Dual Digital Signatures" description="Capture digital signatures for the Store Keeper and the recipient.">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {/* Receiver Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Receiver Signature</div>
+              {receiverSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveSigner('receiver')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('receiver')}>
+                  Tap to Sign (Receiver)
+                </Button>
+              )}
+            </div>
+
+            {/* Store Keeper Signature */}
+            <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
+              <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Store Keeper Signature</div>
+              {storeKeeperSignature ? (
+                <div className="flex flex-col items-center">
+                  <img src={storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveSigner('storeKeeper')}
+                    className="text-[11px] text-accent hover:underline cursor-pointer"
+                  >
+                    Redraw Signature
+                  </button>
+                </div>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" onClick={() => setActiveSigner('storeKeeper')}>
+                  Tap to Sign (Store Keeper)
+                </Button>
+              )}
+            </div>
           </div>
+        </FormSection>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <SignaturePad
-              label={`Store Keeper: ${currentUser.name}`}
-              onSave={setStoreKeeperSignature}
-              required
-            />
-            <SignaturePad
-              label={`Recipient: ${recipientName || 'Visitor / Contractor'}`}
-              onSave={setReceiverSignature}
-              required
-            />
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 ">
-          <Button type="button" variant="secondary" onClick={() => navigate('/issuances/open-loans')}>
+        <div className="pt-4 flex justify-end gap-3 border-t border-border">
+          <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={submitting}>
-            Generate Loan & Deduct Stock
+          <Button type="submit" disabled={!receiverSignature || !storeKeeperSignature}>
+            Complete Loan Issuance
           </Button>
         </div>
       </form>
-      </ContainerCard>
+
+      {/* Signature Capture Modal */}
+      <SignatureModal
+        isOpen={!!activeSigner}
+        title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
+        onClose={() => setActiveSigner(null)}
+        onSave={(dataUrl) => {
+          if (activeSigner === 'receiver') setReceiverSignature(dataUrl);
+          else setStoreKeeperSignature(dataUrl);
+          setActiveSigner(null);
+        }}
+      />
     </div>
   );
 }
