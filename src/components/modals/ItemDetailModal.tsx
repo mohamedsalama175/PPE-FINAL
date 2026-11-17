@@ -4,7 +4,10 @@ import { usePPEStore } from '../../store/useStore';
 import { useTranslation } from '../../i18n/useTranslation';
 import { Button } from '../ui/Button';
 import { StatusBadge } from '../ui/StatusBadge';
-import { X, AlertTriangle, ShieldCheck, Clock, MapPin, Users, History } from 'lucide-react';
+import { X, AlertTriangle, ShieldCheck, Clock, MapPin, Users, History, ScanBarcode, Lock } from 'lucide-react';
+import { SerialList } from '../serials/SerialList';
+import { SerialDetailPanel } from '../serials/SerialDetailPanel';
+import { SerialUnit } from '../../types';
 import { format } from 'date-fns';
 
 interface ItemDetailModalProps {
@@ -14,10 +17,16 @@ interface ItemDetailModalProps {
 }
 
 export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps) {
-  const { language } = useTranslation();
-  const { locations, stockBalances, issuances, itemGroups, employees, auditLogs } = usePPEStore();
+  const { t } = useTranslation();
+  const { locations, stockBalances, issuances, itemGroups, employees, auditLogs, units, itemHasTransactions } = usePPEStore();
+  const [openSerial, setOpenSerial] = React.useState<SerialUnit | null>(null);
+  React.useEffect(() => setOpenSerial(null), [item?.id]);
 
   if (!item) return null;
+
+  const unit = units.find(u => u.id === item.unitId);
+  const sym = unit?.symbol || '';
+  const flagLocked = itemHasTransactions(item.id);
 
   const group = itemGroups.find(g => g.id === item.itemGroupId);
 
@@ -27,11 +36,17 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
     .map(loc => {
       const bal = stockBalances.find(b => b.ppeItemId === item.id && b.locationId === loc.id);
       const onHand = bal ? bal.quantityOnHand : 0;
+      const available = Math.max(0, onHand - (bal?.quarantinedOnHand || 0)); // G9
+      const issued = issuances
+        .filter(i => i.ppeItemId === item.id && i.locationId === loc.id && (i.status === 'issued' || i.status === 'partially_returned') && !i.isLoan)
+        .reduce((sum, i) => sum + i.quantity, 0);
       const isLow = onHand <= item.reorderLevel;
       const isOut = onHand === 0;
       return {
         loc,
         onHand,
+        available,
+        issued,
         isLow,
         isOut
       };
@@ -61,7 +76,7 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
               {item.itemCode}
             </span>
             <h2 className="text-base font-bold text-ink">
-              {language === 'en' ? item.nameEn : item.nameAr}
+              {item.name}
             </h2>
             <StatusBadge 
               status={item.active ? 'success' : 'neutral'} 
@@ -90,7 +105,7 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
             </div>
             <div>
               <div className="text-[11px] font-bold text-body uppercase tracking-wider">Item Group</div>
-              <div className="text-sm font-semibold text-ink mt-0.5">{group ? (language === 'en' ? group.nameEn : group.nameAr) : '-'}</div>
+              <div className="text-sm font-semibold text-ink mt-0.5">{group ? group.name : '-'}</div>
             </div>
             <div>
               <div className="text-[11px] font-bold text-body uppercase tracking-wider">Risk Category</div>
@@ -114,13 +129,34 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
             </div>
             <div>
               <div className="text-[11px] font-bold text-body uppercase tracking-wider">Reorder Level</div>
-              <div className="text-xs font-semibold text-ink mt-0.5">{item.reorderLevel} {item.uom}</div>
+              <div className="text-xs font-semibold text-ink mt-0.5">{item.reorderLevel} {sym}</div>
             </div>
             <div>
               <div className="text-[11px] font-bold text-body uppercase tracking-wider">Target Gender</div>
               <div className="text-xs text-ink mt-0.5">{item.gender}</div>
             </div>
+            <div>
+              <div className="text-[11px] font-bold text-body uppercase tracking-wider">{t('unitOfMeasure')}</div>
+              <div className="text-xs font-semibold text-ink mt-0.5">{unit ? `${unit.code} · ${unit.name} (${unit.symbol})` : '-'}</div>
+            </div>
+            <div>
+              <div className="text-[11px] font-bold text-body uppercase tracking-wider">{t('serialTracked')}</div>
+              <div className="text-xs font-semibold text-ink mt-0.5 flex items-center gap-1">
+                {item.serialTracked ? t('yes') : t('no')}
+                {flagLocked && <Lock className="w-3 h-3 text-safety-amber-signal" aria-label={t('lockedAfterFirstTransaction')} />}
+              </div>
+            </div>
+            <div className="col-span-2">
+              <div className="text-[11px] font-bold text-body uppercase tracking-wider">Total</div>
+              <div className="text-xs text-ink mt-0.5">
+                On Hand <strong>{locationStockList.reduce((s, r) => s + r.onHand, 0)} {sym}</strong> ·
+                Available <strong>{locationStockList.reduce((s, r) => s + r.available, 0)} {sym}</strong> ·
+                Issued <strong>{locationStockList.reduce((s, r) => s + r.issued, 0)} {sym}</strong>
+                {locationStockList.every(r => r.onHand === 0) && <span className="ms-2 text-safety-red font-bold">{t('outOfStock')}</span>}
+              </div>
+            </div>
           </div>
+          {item.description && <p className="text-sm text-body">{item.description}</p>}
 
           {/* PPE-006: Low Stock Indicator per Location */}
           <div>
@@ -130,12 +166,12 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
                 Stock Levels Across Valid Locations (PPE-006)
               </h3>
               <span className="text-[11px] text-body">
-                Reorder Threshold: <strong className="text-ink">{item.reorderLevel} {item.uom}</strong>
+                Reorder Threshold: <strong className="text-ink">{item.reorderLevel} {sym}</strong>
               </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {locationStockList.map(({ loc, onHand, isLow, isOut }) => (
+              {locationStockList.map(({ loc, onHand, available, issued, isLow, isOut }) => (
                 <div 
                   key={loc.id} 
                   className={`p-3.5 rounded border transition-colors ${
@@ -148,7 +184,7 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <div className="font-semibold text-sm text-ink">{loc.nameEn}</div>
+                      <div className="font-semibold text-sm text-ink">{loc.name}</div>
                       <div className="text-[11px] text-body">{loc.site} &middot; {loc.locationType}</div>
                     </div>
                     {isOut ? (
@@ -168,13 +204,29 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
                   <div className="mt-3 flex items-baseline justify-between">
                     <span className="text-xs text-body">On Hand:</span>
                     <span className={`text-lg font-bold ${isOut ? 'text-safety-red' : isLow ? 'text-safety-amber-signal' : 'text-ink'}`}>
-                      {onHand} <span className="text-xs font-normal text-body">{item.uom}</span>
+                      {onHand} <span className="text-xs font-normal text-body">{sym}</span>
                     </span>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-body mt-1">
+                    <span>Available: <strong className="text-ink">{available} {sym}</strong></span>
+                    <span>Issued: <strong className="text-ink">{issued} {sym}</strong></span>
                   </div>
                 </div>
               ))}
             </div>
           </div>
+
+          {/* PPE-006 / PPE-059: serials of a tracked item */}
+          {item.serialTracked && (
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-body flex items-center gap-2 mb-3">
+                <ScanBarcode className="w-4 h-4 text-accent" /> {t('serialNumbers')}
+              </h3>
+              {openSerial
+                ? <SerialDetailPanel unit={openSerial} onClose={() => setOpenSerial(null)} />
+                : <SerialList ppeItemId={item.id} onOpen={setOpenSerial} pageSize={10} />}
+            </div>
+          )}
 
           {/* Active Custody & Employee Holdings */}
           <div>
@@ -201,7 +253,7 @@ export function ItemDetailModal({ item, onClose, onEdit }: ItemDetailModalProps)
                     {activeHoldings.map(({ iss, empName }) => (
                       <tr key={iss.id} className="hover:bg-canvas/50">
                         <td className="p-2.5 font-medium text-ink">{empName}</td>
-                        <td className="p-2.5 font-mono">{iss.quantity}</td>
+                        <td className="p-2.5 font-mono">{iss.quantity} {sym}</td>
                         <td className="p-2.5">{format(new Date(iss.issueDate), 'yyyy-MM-dd')}</td>
                         <td className="p-2.5">
                           {iss.expectedReplacementDate ? format(new Date(iss.expectedReplacementDate), 'yyyy-MM-dd') : '-'}

@@ -27,23 +27,22 @@ export default function CatalogForm() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { id } = useParams();
-  const { ppeItems, itemGroups, locations, attributes, saveEntity, itemHasTransactions } = usePPEStore();
+  const { ppeItems, itemGroups, locations, attributes, units, saveEntity, itemHasTransactions } = usePPEStore();
   const addToast = useToastStore(s => s.addToast);
   const isEdit = Boolean(id);
 
   const [formData, setFormData] = React.useState<Partial<PPEItem>>({
     itemCode: '',
-    nameEn: '',
-    nameAr: '',
+    name: '',
     category: '',
     itemGroupId: itemGroups[0]?.id || '',
     riskCategory: 'I',
     reorderLevel: 20,
-    uom: 'Piece',
+    unitId: units.find(u => u.code === 'PCS' && u.active && !u.deletedAt)?.id || '',
+    serialTracked: false,
     lifespanValue: 6,
     lifespanType: 'Months',
-    descriptionEn: '',
-    descriptionAr: '',
+    description: '',
     manufacturer: '',
     model: '',
     standardCertification: '',
@@ -77,6 +76,12 @@ export default function CatalogForm() {
       .map(attrId => attributes.find(a => a.id === attrId && a.active && !a.deletedAt))
       .filter(Boolean) as Attribute[];
   }, [selectedGroup, attributes]);
+
+  // PPE-001: only Active units are offered; an existing item keeps showing its current unit.
+  const unitOptions = React.useMemo(() => {
+    const current = ppeItems.find(p => p.id === id)?.unitId;
+    return units.filter(u => !u.deletedAt && (u.active || u.id === current)).sort((a, b) => a.code.localeCompare(b.code));
+  }, [units, ppeItems, id]);
 
   // Eligible locations: Active and not Scrap (PPE-001)
   const eligibleLocations = React.useMemo(() => {
@@ -147,9 +152,9 @@ export default function CatalogForm() {
       return;
     }
 
-    // 2. Name validation (both EN and AR required)
-    if (!formData.nameEn?.trim() || !formData.nameAr?.trim()) {
-      addToast('Item Name is required in both English and Arabic.', 'error');
+    // 2. Name validation (G13: stored in English only)
+    if (!formData.name?.trim()) {
+      addToast('Item Name is required.', 'error');
       return;
     }
 
@@ -168,14 +173,14 @@ export default function CatalogForm() {
     for (const attr of groupAttributes) {
       const hasValueForAttr = attr.values.some(v => selectedVals.includes(v.id));
       if (!hasValueForAttr) {
-        addToast(`Please select at least one variant value for attribute: ${attr.nameEn}.`, 'error');
+        addToast(`Please select at least one variant value for attribute: ${attr.name}.`, 'error');
         return;
       }
     }
 
     // 5. Gender match rule validation (PPE-001: if Item Group requires gender match, gender attribute must have values chosen)
     if (selectedGroup?.requiresGenderMatch) {
-      const genderAttr = groupAttributes.find(a => a.code.toUpperCase() === 'GENDER' || a.nameEn.toLowerCase().includes('gender'));
+      const genderAttr = groupAttributes.find(a => a.code.toUpperCase() === 'GENDER' || a.name.toLowerCase().includes('gender'));
       if (genderAttr) {
         const hasGenderValue = genderAttr.values.some(v => selectedVals.includes(v.id));
         if (!hasGenderValue) {
@@ -185,8 +190,8 @@ export default function CatalogForm() {
       }
     }
 
-    // 6. Unit of Measure
-    if (!formData.uom) {
+    // 6. Unit of Measure (PPE-001: pick from active units, PPE-051)
+    if (!formData.unitId) {
       addToast('Unit of Measure is required.', 'error');
       return;
     }
@@ -209,11 +214,16 @@ export default function CatalogForm() {
       return;
     }
 
-    saveEntity('ppeItems', {
+    const res = saveEntity('ppeItems', {
       ...formData,
       itemCode: code,
+      serialTracked: !!formData.serialTracked,
       id: isEdit ? id : generateId()
     } as PPEItem);
+    if (!res.success) {
+      addToast(res.message || 'Could not save the item.', 'error');
+      return;
+    }
 
     addToast(isEdit ? 'PPE Item updated successfully.' : 'PPE Item created successfully.', 'success');
     navigate('/catalog');
@@ -230,7 +240,7 @@ export default function CatalogForm() {
       <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg px-6 py-4 space-y-6">
         
         {/* Basic Info */}
-        <FormSection title="Basic Information" description="Item identity, standardized categorization, and bilingual names">
+        <FormSection title="Basic Information" description="Item identity and categorization. Names are stored in English.">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <FormGroup label="Item Code">
               <div className="relative">
@@ -266,42 +276,45 @@ export default function CatalogForm() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormGroup label="Item Name (English)">
+            <FormGroup label="Item Name">
               <Input 
-                value={formData.nameEn} 
-                onChange={e => setFormData({...formData, nameEn: e.target.value})} 
+                value={formData.name} 
+                onChange={e => setFormData({...formData, name: e.target.value})} 
                 placeholder="e.g. Safety Helmet"
-                required 
-              />
-            </FormGroup>
-            <FormGroup label="Item Name (Arabic)">
-              <Input 
-                value={formData.nameAr} 
-                onChange={e => setFormData({...formData, nameAr: e.target.value})} 
-                dir="rtl" 
-                placeholder="مثال: خوذة أمان"
                 required 
               />
             </FormGroup>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormGroup label="Description (English)">
+            <FormGroup label="Description">
               <Input 
-                value={formData.descriptionEn} 
-                onChange={e => setFormData({...formData, descriptionEn: e.target.value})} 
+                value={formData.description} 
+                onChange={e => setFormData({...formData, description: e.target.value})} 
                 placeholder="Certified impact-resistant hard hat"
               />
             </FormGroup>
-            <FormGroup label="Description (Arabic)">
-              <Input 
-                value={formData.descriptionAr} 
-                onChange={e => setFormData({...formData, descriptionAr: e.target.value})} 
-                dir="rtl" 
-                placeholder="خوذة سلامة معتمدة مقاومة للصدمات"
-              />
-            </FormGroup>
           </div>
+
+          {/* PPE-001 / PPE-002: Serial Number tracked, locked after the first transaction */}
+          <label className={`flex items-start gap-3 p-3 border rounded-lg ${isCodeLocked ? 'bg-canvas cursor-not-allowed' : 'cursor-pointer hover:bg-canvas/50'}`}>
+            <input
+              type="checkbox"
+              className="mt-0.5 w-4 h-4 accent-accent"
+              checked={!!formData.serialTracked}
+              disabled={isCodeLocked}
+              onChange={e => setFormData({ ...formData, serialTracked: e.target.checked })}
+            />
+            <span>
+              <span className="block text-sm font-semibold text-ink flex items-center gap-1.5">
+                {t('serialTracked')}
+                {isCodeLocked && <Lock className="w-3.5 h-3.5 text-safety-amber-signal" aria-label={t('lockedAfterFirstTransaction')} />}
+              </span>
+              <span className="block text-xs text-body">
+                {t('serialTrackedHint')} {isCodeLocked && <strong className="text-safety-amber-signal">{t('lockedAfterFirstTransaction')}.</strong>}
+              </span>
+            </span>
+          </label>
         </FormSection>
 
         {/* Item Group & Variants (Rule G3 & G4) */}
@@ -323,18 +336,20 @@ export default function CatalogForm() {
                 <option value="">Select Item Group...</option>
                 {itemGroups.filter(g => g.active && !g.deletedAt).map(ig => (
                   <option key={ig.id} value={ig.id}>
-                    {ig.nameEn} {ig.requiresGenderMatch ? ' (Requires Gender Match)' : ''}
+                    {ig.name} {ig.requiresGenderMatch ? ' (Requires Gender Match)' : ''}
                   </option>
                 ))}
               </Select>
             </FormGroup>
 
-            <FormGroup label="Unit of Measure (UoM)">
-              <Select value={formData.uom || 'Piece'} onChange={e => setFormData({...formData, uom: e.target.value})} required>
-                <option value="Piece">Piece</option>
-                <option value="Pair">Pair</option>
-                <option value="Set">Set</option>
-                <option value="Box">Box</option>
+            <FormGroup label={`${t('unitOfMeasure')} *`}>
+              <Select value={formData.unitId || ''} onChange={e => setFormData({...formData, unitId: e.target.value})} required>
+                <option value="">Select unit...</option>
+                {unitOptions.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {u.code} - {u.name} ({u.symbol}){!u.active ? ` (${t('inactive')})` : ''}
+                  </option>
+                ))}
               </Select>
             </FormGroup>
           </div>
@@ -357,7 +372,7 @@ export default function CatalogForm() {
                 return (
                   <div key={attr.id} className={`p-3.5 border rounded-lg transition-colors ${hasSelection ? 'bg-surface border-border' : 'bg-red-50/40 border-safety-red/30'}`}>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-bold text-ink">{attr.nameEn} ({attr.nameAr || attr.code})</span>
+                      <span className="text-sm font-bold text-ink">{attr.name} ({attr.code})</span>
                       <span className={`text-[11px] font-medium ${hasSelection ? 'text-safety-green' : 'text-safety-red'}`}>
                         {hasSelection ? `${selectedForAttr.length} selected` : 'At least 1 required *'}
                       </span>
@@ -488,7 +503,7 @@ export default function CatalogForm() {
                       onChange={() => toggleLocation(loc.id)} 
                     />
                     <div>
-                      <span className="block text-sm font-semibold text-ink">{loc.nameEn}</span>
+                      <span className="block text-sm font-semibold text-ink">{loc.name}</span>
                       <span className="text-xs text-body">{loc.code} &middot; {loc.site} &middot; Condition: {loc.stockCondition}</span>
                     </div>
                   </label>

@@ -44,8 +44,7 @@ export default function Locations() {
       if (isStoreKeeper && !myAssignedLocationIds.includes(item.id)) return false;
 
       const matchSearch = item.code.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameEn.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameAr.includes(search);
+                          item.name.toLowerCase().includes(search.toLowerCase());
       const matchSite = !siteFilter || item.site === siteFilter;
       const matchType = !typeFilter || item.locationType === typeFilter;
       const matchCondition = !conditionFilter || (item.stockCondition || 'New') === conditionFilter;
@@ -183,7 +182,7 @@ export default function Locations() {
                 onClick={() => setSelectedLocation(item)}
                 className="font-medium text-ink cursor-pointer hover:underline"
               >
-                {language === 'en' ? item.nameEn : item.nameAr}
+                {item.name}
               </div>
               <div className="text-[11px] text-body">{item.site} &middot; {item.locationType}</div>
             </div>

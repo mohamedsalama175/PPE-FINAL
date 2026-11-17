@@ -107,7 +107,7 @@ export default function ReplacementsDue() {
         if (search) {
           const q = search.toLowerCase();
           const empMatch = entry.emp?.name.toLowerCase().includes(q) || entry.emp?.employeeCode.toLowerCase().includes(q);
-          const itemMatch = entry.item?.nameEn.toLowerCase().includes(q) || entry.item?.itemCode.toLowerCase().includes(q);
+          const itemMatch = entry.item?.name.toLowerCase().includes(q) || entry.item?.itemCode.toLowerCase().includes(q);
           return empMatch || itemMatch;
         }
         return true;
@@ -125,9 +125,9 @@ export default function ReplacementsDue() {
       d.iss.reference || d.iss.id,
       d.emp?.name || d.iss.holderName || '',
       d.emp?.employeeCode || '',
-      d.item?.nameEn || '',
+      d.item?.name || '',
       d.item?.itemCode || '',
-      d.loc?.nameEn || '',
+      d.loc?.name || '',
       format(new Date(d.iss.issueDate), 'yyyy-MM-dd'),
       format(d.dueDate, 'yyyy-MM-dd'),
       d.daysLeft < 0 ? `${Math.abs(d.daysLeft)} days overdue` : `${d.daysLeft} days remaining`,
@@ -225,7 +225,7 @@ export default function ReplacementsDue() {
           )},
           { key: 'item', header: 'Equipment', render: (d) => (
             <div>
-              <div className="font-medium text-ink">{d.item ? (language === 'en' ? d.item.nameEn : d.item.nameAr) : d.iss.ppeItemId}</div>
+              <div className="font-medium text-ink">{d.item ? d.item.name : d.iss.ppeItemId}</div>
               <div className="text-[11px] text-body">{d.item?.itemCode} &middot; Cat {d.item?.riskCategory}</div>
             </div>
           )},

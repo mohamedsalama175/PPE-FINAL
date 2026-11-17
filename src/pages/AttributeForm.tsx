@@ -21,8 +21,7 @@ export default function AttributeForm() {
   const isEdit = Boolean(id);
   const [formData, setFormData] = React.useState<Partial<Attribute>>({
     code: '',
-    nameEn: '',
-    nameAr: '',
+    name: '',
     values: [
       { id: generateId(), value: '', sortOrder: 1 }
     ],
@@ -88,8 +87,8 @@ export default function AttributeForm() {
     e.preventDefault();
 
     const code = (formData.code || '').trim().toUpperCase();
-    if (!code || !formData.nameEn?.trim()) {
-      addToast('Attribute Code and Name (EN) are required.', 'error');
+    if (!code || !formData.name?.trim()) {
+      addToast('Attribute Code and Name are required.', 'error');
       return;
     }
 
@@ -167,20 +166,12 @@ export default function AttributeForm() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormGroup label="Name (English)">
+            <FormGroup label="Name">
               <Input 
-                value={formData.nameEn} 
-                onChange={e => setFormData({...formData, nameEn: e.target.value})} 
+                value={formData.name} 
+                onChange={e => setFormData({...formData, name: e.target.value})} 
                 placeholder="e.g. Size"
                 required 
-              />
-            </FormGroup>
-            <FormGroup label="Name (Arabic)">
-              <Input 
-                value={formData.nameAr} 
-                onChange={e => setFormData({...formData, nameAr: e.target.value})} 
-                dir="rtl" 
-                placeholder="مثال: المقاس"
               />
             </FormGroup>
           </div>

@@ -30,7 +30,7 @@ export function AttributeDetailModal({ attribute, onClose, onEdit }: AttributeDe
               {attribute.code}
             </span>
             <h3 className="font-bold text-ink text-sm">
-              {language === 'en' ? attribute.nameEn : attribute.nameAr}
+              {attribute.name}
             </h3>
             <StatusBadge status={attribute.active ? 'success' : 'neutral'} label={attribute.active ? 'Active' : 'Inactive'} />
           </div>
@@ -71,7 +71,7 @@ export function AttributeDetailModal({ attribute, onClose, onEdit }: AttributeDe
                   <div key={group.id} className="p-2.5 rounded bg-canvas border border-border text-xs flex justify-between items-center">
                     <div>
                       <span className="font-bold text-ink mr-2">{group.code}</span>
-                      <span className="text-body">{language === 'en' ? group.nameEn : group.nameAr}</span>
+                      <span className="text-body">{group.name}</span>
                     </div>
                     <StatusBadge status={group.active ? 'success' : 'neutral'} label={group.active ? 'Active' : 'Inactive'} />
                   </div>

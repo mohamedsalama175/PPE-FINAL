@@ -11,20 +11,24 @@ import { useToastStore } from '../store/toastStore';
 import { format, addDays } from 'date-fns';
 import { useTranslation } from '../i18n/useTranslation';
 import { Plus, Trash2, Clock, ShieldAlert } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 interface LoanItemLine {
   id: string;
   ppeItemId: string;
   quantity: number;
   batchNumber?: string;
+  serialIds?: string[]; // PPE-058: tracked item, quantity = serials picked
 }
 
 export default function IssueLoanForm() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { ppeItems, locations, employees, currentUser, issueLoan, batches, stockBalances } = usePPEStore();
+  const { ppeItems, locations, employees, currentUser, issueLoan, batches, stockBalances, units, inStockSerials, serialUnits } = usePPEStore();
+  const itemOf = (id: string) => ppeItems.find(p => p.id === id);
+  const sym = (id: string) => units.find(u => u.id === itemOf(id)?.unitId)?.symbol || '';
   const addToast = useToastStore(s => s.addToast);
-  
+
   const isStoreKeeper = currentUser.role === 'Store Keeper';
   const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
 
@@ -64,8 +68,16 @@ export default function IssueLoanForm() {
   };
 
   const handleLineChange = (id: string, field: keyof LoanItemLine, value: any) => {
-    setLines(prev => prev.map(l => l.id === id ? { ...l, [field]: value } : l));
+    setLines(prev => prev.map(l => {
+      if (l.id !== id) return l;
+      const next = { ...l, [field]: value };
+      if (field === 'ppeItemId') next.serialIds = [];
+      if (field === 'serialIds') next.quantity = (value as string[]).length;
+      return next;
+    }));
   };
+  // a new location means new serial choices
+  React.useEffect(() => { setLines(prev => prev.map(l => ({ ...l, serialIds: [] }))); }, [locationId]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,11 +92,15 @@ export default function IssueLoanForm() {
 
     // Check stock for each line
     for (const line of lines) {
+      if (itemOf(line.ppeItemId)?.serialTracked && !(line.serialIds || []).length) {
+        addToast(`Pick the serial numbers for ${itemOf(line.ppeItemId)?.name}.`, 'error');
+        return;
+      }
       const bal = stockBalances.find(b => b.ppeItemId === line.ppeItemId && b.locationId === locationId);
       const avail = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
       if (avail < line.quantity) {
         const item = ppeItems.find(p => p.id === line.ppeItemId);
-        addToast(`Insufficient stock for ${item?.nameEn || 'item'} at this location (Available: ${avail}).`, 'error');
+        addToast(`Insufficient stock for ${item?.name || 'item'} at this location (Available: ${avail}).`, 'error');
         return;
       }
     }
@@ -100,10 +116,12 @@ export default function IssueLoanForm() {
         .filter(b => b.ppeItemId === line.ppeItemId && b.locationId === locationId && b.availableQty >= line.quantity && b.status === 'Active')
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
 
+      const tracked = itemOf(line.ppeItemId)?.serialTracked;
       return {
         ppeItemId: line.ppeItemId,
-        quantity: line.quantity,
-        batchNumber: batch?.batchNumber
+        quantity: tracked ? (line.serialIds || []).length : line.quantity,
+        batchNumber: tracked ? undefined : batch?.batchNumber,
+        serialIds: tracked ? line.serialIds : undefined
       };
     });
 
@@ -121,6 +139,10 @@ export default function IssueLoanForm() {
       issuedBy: currentUser.id
     });
 
+    if (!res.success) {
+      addToast(res.message || 'Loan failed.', 'error');
+      return;
+    }
     if (res.success) {
       addToast(`Temporary Loan issued successfully (${res.reference}) (PPE-036).`, 'success');
       navigate('/issuances/open-loans');
@@ -129,21 +151,21 @@ export default function IssueLoanForm() {
 
   return (
     <div className="max-w-3xl space-y-6 pb-20">
-      <PageHeader 
-        title="Issue Temporary PPE Loan (PPE-036)" 
+      <PageHeader
+        title="Issue Temporary PPE Loan (PPE-036)"
         subtitle="Multi-line temporary custody issuance for visitors, contractors, and staff with expected return tracking"
         onBack={() => navigate('/issuances')}
       />
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <FormSection title="Recipient & Host Details">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="Recipient Full Name">
-              <Input 
-                value={holderName} 
-                onChange={e => setHolderName(e.target.value)} 
-                required 
-                placeholder="e.g. Michael Smith" 
+              <Input
+                value={holderName}
+                onChange={e => setHolderName(e.target.value)}
+                required
+                placeholder="e.g. Michael Smith"
               />
             </FormGroup>
 
@@ -156,25 +178,25 @@ export default function IssueLoanForm() {
             </FormGroup>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
             <FormGroup label="Company / Employer Name">
-              <Input 
-                value={companyName} 
-                onChange={e => setCompanyName(e.target.value)} 
-                placeholder="e.g. PetroChem Services" 
+              <Input
+                value={companyName}
+                onChange={e => setCompanyName(e.target.value)}
+                placeholder="e.g. PetroChem Services"
               />
             </FormGroup>
 
             <FormGroup label="Contact Phone Number">
-              <Input 
-                value={contactNumber} 
-                onChange={e => setContactNumber(e.target.value)} 
-                placeholder="+20 100 123 4567" 
+              <Input
+                value={contactNumber}
+                onChange={e => setContactNumber(e.target.value)}
+                placeholder="+20 100 123 4567"
               />
             </FormGroup>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
             <FormGroup label="Host Employee (Internal Sponsor)">
               <Select value={hostEmployeeId} onChange={e => setHostEmployeeId(e.target.value)}>
                 {employees.filter(e => e.active).map(emp => (
@@ -188,7 +210,7 @@ export default function IssueLoanForm() {
             <FormGroup label="Issuing Location">
               <Select value={locationId} onChange={e => setLocationId(e.target.value)}>
                 {myLocations.map(l => (
-                  <option key={l.id} value={l.id}>{l.nameEn} ({l.site})</option>
+                  <option key={l.id} value={l.id}>{l.name} ({l.site})</option>
                 ))}
               </Select>
             </FormGroup>
@@ -196,11 +218,11 @@ export default function IssueLoanForm() {
 
           <div className="mt-4">
             <FormGroup label="Expected Return Date">
-              <Input 
-                type="date" 
-                value={expectedReturnDate} 
-                onChange={e => setExpectedReturnDate(e.target.value)} 
-                required 
+              <Input
+                type="date"
+                value={expectedReturnDate}
+                onChange={e => setExpectedReturnDate(e.target.value)}
+                required
                 min={format(new Date(), 'yyyy-MM-dd')}
                 className="w-48"
               />
@@ -209,44 +231,62 @@ export default function IssueLoanForm() {
         </FormSection>
 
         {/* Multi-Line Items (PPE-036) */}
-        <FormSection 
-          title="Loan Equipment Lines (Multi-Item PPE-036)" 
+        <FormSection
+          title="Loan Equipment Lines (Multi-Item PPE-036)"
           description="Add multiple items to be issued together on this single loan voucher."
         >
           <div className="space-y-3">
             {lines.map((line, index) => (
-              <div key={line.id} className="p-3 bg-canvas border border-border rounded flex items-center gap-3">
+              <div key={line.id} className="space-y-2">
+              <div className="p-3 bg-canvas border border-border rounded flex flex-wrap sm:flex-nowrap items-center gap-3">
                 <span className="text-xs font-bold text-body font-mono w-6">#{index + 1}</span>
                 <div className="flex-1">
-                  <Select 
-                    value={line.ppeItemId} 
+                  <Select
+                    value={line.ppeItemId}
                     onChange={e => handleLineChange(line.id, 'ppeItemId', e.target.value)}
                   >
                     {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
                       <option key={p.id} value={p.id}>
-                        {p.nameEn} ({p.itemCode})
+                        {p.name} ({p.itemCode})
                       </option>
                     ))}
                   </Select>
                 </div>
-                <div className="w-24">
-                  <Input 
-                    type="number" 
-                    min="1" 
-                    value={line.quantity} 
-                    onChange={e => handleLineChange(line.id, 'quantity', parseInt(e.target.value, 10) || 1)} 
-                  />
+                <div className="w-28 flex items-center gap-1">
+                  {itemOf(line.ppeItemId)?.serialTracked ? (
+                    <span className="text-xs font-bold" title="Quantity = serials picked">{(line.serialIds || []).length} {sym(line.ppeItemId)}</span>
+                  ) : (
+                    <>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={line.quantity}
+                        onChange={e => handleLineChange(line.id, 'quantity', parseInt(e.target.value, 10) || 1)}
+                        aria-label="Quantity"
+                      />
+                      <span className="text-xs text-body">{sym(line.ppeItemId)}</span>
+                    </>
+                  )}
                 </div>
-                <Button 
-                  type="button" 
-                  variant="ghost" 
-                  size="sm" 
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
                   className="text-safety-red hover:bg-safety-red/10"
                   onClick={() => handleRemoveLine(line.id)}
                   disabled={lines.length <= 1}
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>
+              </div>
+              {itemOf(line.ppeItemId)?.serialTracked && (
+                <SerialPicker
+                  ppeItemId={line.ppeItemId}
+                  candidates={inStockSerials(line.ppeItemId, locationId).filter(u => !lines.some(o => o.id !== line.id && o.serialIds?.includes(u.id)))}
+                  value={line.serialIds || []}
+                  onChange={ids => handleLineChange(line.id, 'serialIds', ids)}
+                />
+              )}
               </div>
             ))}
 
@@ -258,15 +298,15 @@ export default function IssueLoanForm() {
 
         {/* Digital Signatures Pad */}
         <FormSection title="Dual Digital Signatures" description="Capture digital signatures for the Store Keeper and the recipient.">
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {/* Receiver Signature */}
             <div className="border border-border rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] bg-canvas">
               <div className="text-xs font-bold uppercase tracking-wider text-body mb-3">Receiver Signature</div>
               {receiverSignature ? (
                 <div className="flex flex-col items-center">
                   <img src={receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     onClick={() => setActiveSigner('receiver')}
                     className="text-[11px] text-accent hover:underline cursor-pointer"
                   >
@@ -286,8 +326,8 @@ export default function IssueLoanForm() {
               {storeKeeperSignature ? (
                 <div className="flex flex-col items-center">
                   <img src={storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     onClick={() => setActiveSigner('storeKeeper')}
                     className="text-[11px] text-accent hover:underline cursor-pointer"
                   >
@@ -314,7 +354,7 @@ export default function IssueLoanForm() {
       </form>
 
       {/* Signature Capture Modal */}
-      <SignatureModal 
+      <SignatureModal
         isOpen={!!activeSigner}
         title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
         onClose={() => setActiveSigner(null)}

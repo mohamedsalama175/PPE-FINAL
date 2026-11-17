@@ -16,7 +16,7 @@ interface KitDetailModalProps {
 export function KitDetailModal({ kit, onClose, onEdit }: KitDetailModalProps) {
   const navigate = useNavigate();
   const { language } = useTranslation();
-  const { jobPositions, ppeItems, stockBalances, issuances, moduleSettings } = usePPEStore();
+  const { jobPositions, ppeItems, stockBalances, issuances, moduleSettings, units } = usePPEStore();
 
   if (!kit) return null;
 
@@ -34,7 +34,7 @@ export function KitDetailModal({ kit, onClose, onEdit }: KitDetailModalProps) {
         <div className="flex justify-between items-center px-6 py-4 border-b border-border bg-canvas">
           <div className="flex items-center gap-2">
             <h3 className="font-bold text-ink text-sm">
-              {language === 'en' ? kit.nameEn : kit.nameAr}
+              {kit.name}
             </h3>
             <StatusBadge status={kit.active ? 'success' : 'neutral'} label={kit.active ? 'Active' : 'Inactive'} />
           </div>
@@ -49,7 +49,7 @@ export function KitDetailModal({ kit, onClose, onEdit }: KitDetailModalProps) {
             <div className="bg-canvas border border-border rounded p-3 flex flex-col justify-between">
               <span className="text-[11px] font-bold text-body uppercase tracking-wider">Target Job Position</span>
               <span className="text-xs font-bold text-ink mt-1">
-                {jobPosition ? (language === 'en' ? jobPosition.nameEn : jobPosition.nameAr) : 'Unassigned'}
+                {jobPosition ? jobPosition.name : 'Unassigned'}
               </span>
             </div>
 
@@ -92,7 +92,7 @@ export function KitDetailModal({ kit, onClose, onEdit }: KitDetailModalProps) {
                       <tr key={ki.id} className={`hover:bg-canvas/50 ${isInactiveOrTrashed ? 'bg-red-50/40' : ''}`}>
                         <td className="p-2.5 font-medium text-ink">
                           <div>
-                            {item ? (language === 'en' ? item.nameEn : item.nameAr) : ki.ppeItemId}
+                            {item ? item.name : ki.ppeItemId}
                             {isInactiveOrTrashed && (
                               <span className="ml-2 text-[10px] font-bold text-safety-red bg-red-100 px-1.5 py-0.2 rounded">
                                 Inactive/Trashed (PPE-032)
@@ -101,7 +101,7 @@ export function KitDetailModal({ kit, onClose, onEdit }: KitDetailModalProps) {
                           </div>
                         </td>
                         <td className="p-2.5 font-mono text-body">{item?.itemCode || '-'}</td>
-                        <td className="p-2.5 text-center font-bold">{ki.qty} {item?.uom || ''}</td>
+                        <td className="p-2.5 text-center font-bold">{ki.qty} {units.find(u => u.id === item?.unitId)?.symbol || ''}</td>
                         <td className="p-2.5 text-right font-semibold">
                           <span className={isOut ? 'text-safety-red' : isLow ? 'text-safety-amber-signal' : 'text-safety-green'}>
                             {totalAvail} units

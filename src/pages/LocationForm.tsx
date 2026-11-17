@@ -22,8 +22,7 @@ export default function LocationForm() {
 
   const [formData, setFormData] = React.useState<Partial<Location>>({
     code: '',
-    nameEn: '',
-    nameAr: '',
+    name: '',
     site: 'Main Campus',
     locationType: 'Central Warehouse',
     stockCondition: 'New',
@@ -65,7 +64,7 @@ export default function LocationForm() {
     e.preventDefault();
 
     const code = (formData.code || '').trim().toUpperCase();
-    if (!code || !formData.nameEn?.trim() || !formData.site?.trim()) {
+    if (!code || !formData.name?.trim() || !formData.site?.trim()) {
       addToast('Location Code, English Name, and Site are required.', 'error');
       return;
     }
@@ -180,20 +179,12 @@ export default function LocationForm() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormGroup label="Location Name (English)">
+            <FormGroup label="Location Name">
               <Input 
-                value={formData.nameEn} 
-                onChange={e => setFormData({...formData, nameEn: e.target.value})} 
+                value={formData.name} 
+                onChange={e => setFormData({...formData, name: e.target.value})} 
                 placeholder="e.g. Clinic A - Fridge 2"
                 required 
-              />
-            </FormGroup>
-            <FormGroup label="Location Name (Arabic)">
-              <Input 
-                value={formData.nameAr} 
-                onChange={e => setFormData({...formData, nameAr: e.target.value})} 
-                dir="rtl" 
-                placeholder="مثال: عيادة أ - ثلاجة 2"
               />
             </FormGroup>
           </div>

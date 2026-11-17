@@ -39,7 +39,7 @@ export default function OpeningBalances() {
               }`}
             >
               <span className="font-mono">{loc.code}</span>
-              <span>{loc.nameEn}</span>
+              <span>{loc.name}</span>
               {loc.openingBalanceClosed ? (
                 <span className="inline-flex items-center text-[10px] bg-gray-200 text-gray-700 px-1.5 py-0.2 rounded font-bold">
                   <Lock className="w-2.5 h-2.5 mr-0.5" /> Closed
@@ -82,7 +82,7 @@ export default function OpeningBalances() {
                 const loc = locations.find(l => l.id === row.locationId);
                 return (
                   <div>
-                    <div className="font-semibold text-ink text-xs">{loc?.nameEn || 'Unknown'}</div>
+                    <div className="font-semibold text-ink text-xs">{loc?.name || 'Unknown'}</div>
                     <div className="text-[10px] font-mono text-body">{loc?.code} &middot; {loc?.stockCondition}</div>
                   </div>
                 );

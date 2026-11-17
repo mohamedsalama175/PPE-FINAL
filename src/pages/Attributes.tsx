@@ -28,8 +28,7 @@ export default function Attributes() {
   const filteredItems = React.useMemo(() => {
     return attributes.filter(item => {
       const matchSearch = item.code.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameEn.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameAr.includes(search);
+                          item.name.toLowerCase().includes(search.toLowerCase());
       const isNotDeleted = !item.deletedAt;
       return matchSearch && isNotDeleted;
     });
@@ -112,7 +111,7 @@ export default function Attributes() {
               onClick={() => setSelectedAttribute(item)}
               className="font-medium text-ink cursor-pointer hover:underline"
             >
-              {language === 'en' ? item.nameEn : item.nameAr}
+              {item.name}
             </div>
           )},
           { key: 'values', header: 'Values (PPE-008)', render: (item) => (

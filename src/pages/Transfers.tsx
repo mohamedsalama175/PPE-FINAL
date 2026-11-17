@@ -12,7 +12,7 @@ import { useTranslation } from '../i18n/useTranslation';
 
 export default function Transfers() {
   const navigate = useNavigate();
-  const { stockMovements, ppeItems, locations } = usePPEStore();
+  const { stockMovements, ppeItems, locations, getUnitSymbol } = usePPEStore();
   const { language } = useTranslation();
 
   const transfers = React.useMemo(() => {
@@ -41,17 +41,17 @@ export default function Transfers() {
           { key: 'date', header: 'Date', render: (t) => format(new Date(t.createdAt), 'MMM d, yyyy') },
           { key: 'item', header: 'Item', render: (t) => {
             const item = ppeItems.find(i => i.id === t.ppeItemId);
-            return item ? (language === 'en' ? item.nameEn : item.nameAr) : t.ppeItemId;
+            return item ? item.name : t.ppeItemId;
           }},
           { key: 'from', header: 'From Location', render: (t) => {
             const loc = locations.find(l => l.id === t.locationId);
-            return loc ? (language === 'en' ? loc.nameEn : loc.nameAr) : t.locationId;
+            return loc ? loc.name : t.locationId;
           }},
           { key: 'to', header: 'To Location', render: (t) => {
             const loc = locations.find(l => l.id === t.toLocationId);
-            return loc ? (language === 'en' ? loc.nameEn : loc.nameAr) : t.toLocationId || '-';
+            return loc ? loc.name : t.toLocationId || '-';
           }},
-          { key: 'qty', header: 'Quantity', render: (t) => t.quantity },
+          { key: 'qty', header: 'Quantity', render: (t) => `${t.quantity} ${getUnitSymbol(t.ppeItemId)}` },
           { key: 'status', header: 'Status', render: () => <StatusBadge status="success" label="Completed" /> }
         ]}
       />

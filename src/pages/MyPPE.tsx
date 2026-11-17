@@ -43,7 +43,7 @@ export default function MyPPE() {
                   const ppe = ppeItems.find(p => p.id === i.ppeItemId);
                   return ppe ? (
                     <div>
-                      <div className="font-medium text-ink">{language === 'en' ? ppe.nameEn : ppe.nameAr}</div>
+                      <div className="font-medium text-ink">{ppe.name}</div>
                       <div className="text-xs text-body font-mono mt-0.5">{ppe.itemCode}</div>
                     </div>
                   ) : i.ppeItemId;

@@ -10,8 +10,8 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { exportEmployeeTimelinePdf } from '../lib/pdfService';
 import { useToastStore } from '../store/toastStore';
 import { format } from 'date-fns';
-import { 
-  Printer, ArrowLeft, Shield, CornerDownLeft, 
+import {
+  Printer, ArrowLeft, Shield, CornerDownLeft,
   Clock, CheckCircle2, AlertTriangle, FileSpreadsheet, UserX, UserCheck
 } from 'lucide-react';
 
@@ -19,7 +19,10 @@ export default function EmployeeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { language } = useTranslation();
-  const { employees, jobPositions, issuances, ppeItems, locations, currentUser, setEmployeeStatus, returnItem } = usePPEStore();
+  const { employees, jobPositions, issuances, ppeItems, locations, currentUser, setEmployeeStatus, returnItem, serialUnits, units } = usePPEStore();
+  const symOf = (ppeItemId?: string) => units.find(u => u.id === ppeItems.find(p => p.id === ppeItemId)?.unitId)?.symbol || '';
+  // PPE-043 / PPE-058: serials recorded on an issuance, shown in the timeline
+  const serialsOf = (i: { serialIds?: string[] }) => (i.serialIds || []).map(id => serialUnits.find(u => u.id === id)?.serial).filter(Boolean).join(', ');
   const addToast = useToastStore(s => s.addToast);
 
   const employee = employees.find(e => e.id === id);
@@ -63,13 +66,17 @@ export default function EmployeeDetail() {
   };
 
   const handleQuickReturn = (issuanceId: string) => {
-    returnItem(issuanceId, 'good', true, currentUser.id);
+    // A tracked issuance returns every serial still held on it.
+    const iss = issuances.find(i => i.id === issuanceId);
+    const held = iss?.serialIds?.filter(id => !iss.returnedSerialIds?.includes(id));
+    const res = returnItem(issuanceId, 'good', true, currentUser.id, held?.length ? { serialIds: held } : undefined);
+    if (!res.success) { addToast(res.message || 'Return failed.', 'error'); return; }
     addToast('Item returned in good condition to Used storage.', 'success');
   };
 
   return (
     <div className="space-y-6 pb-20">
-      <PageHeader 
+      <PageHeader
         title={`Employee: ${employee.name}`}
         subtitle="PPE Custody, Lifecycle Management, and Signature Audit Record"
         onBack={() => navigate('/employees')}
@@ -95,13 +102,13 @@ export default function EmployeeDetail() {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold text-ink">{employee.name}</h2>
-                <StatusBadge 
-                  status={employee.status === 'Active' || (!employee.status && employee.active) ? 'success' : employee.status === 'Terminated' ? 'error' : 'warning'} 
-                  label={employee.status || (employee.active ? 'Active' : 'Inactive')} 
+                <StatusBadge
+                  status={employee.status === 'Active' || (!employee.status && employee.active) ? 'success' : employee.status === 'Terminated' ? 'error' : 'warning'}
+                  label={employee.status || (employee.active ? 'Active' : 'Inactive')}
                 />
               </div>
               <div className="text-xs text-body mt-0.5 font-mono">
-                {employee.employeeCode} &middot; {jobPosition ? (language === 'en' ? jobPosition.nameEn : jobPosition.nameAr) : employee.role}
+                {employee.employeeCode} &middot; {jobPosition ? jobPosition.name : employee.role}
               </div>
             </div>
           </div>
@@ -162,14 +169,14 @@ export default function EmployeeDetail() {
           </span>
         </div>
 
-        <DataTable 
+        <DataTable
           data={currentlyHeld}
           keyExtractor={(item) => item.id}
           emptyState={
-            <EmptyState 
-              icon={<Shield />} 
-              title="No active PPE held" 
-              description="This employee currently has zero active equipment issued." 
+            <EmptyState
+              icon={<Shield />}
+              title="No active PPE held"
+              description="This employee currently has zero active equipment issued."
             />
           }
           columns={[
@@ -187,12 +194,13 @@ export default function EmployeeDetail() {
               const item = ppeItems.find(p => p.id === i.ppeItemId);
               return (
                 <div>
-                  <div className="font-medium text-ink">{item ? (language === 'en' ? item.nameEn : item.nameAr) : (i.kitId ? 'Kit Equipment' : i.ppeItemId)}</div>
+                  <div className="font-medium text-ink">{item ? item.name : (i.kitId ? 'Kit Equipment' : i.ppeItemId)}</div>
                   <div className="text-[11px] text-body">{item?.itemCode} &middot; Cat {item?.riskCategory}</div>
+                  {!!i.serialIds?.length && <div className="text-[10px] font-mono text-accent">SN: {serialsOf(i)}</div>}
                 </div>
               );
             }},
-            { key: 'quantity', header: 'Qty', render: (i) => <span className="font-bold">{i.quantity}</span> },
+            { key: 'quantity', header: 'Qty', render: (i) => <span className="font-bold">{i.quantity} <span className="font-normal text-body text-xs">{symOf(i.ppeItemId)}</span></span> },
             { key: 'issueDate', header: 'Issue Date', render: (i) => format(new Date(i.issueDate), 'yyyy-MM-dd') },
             { key: 'dueDate', header: 'Replacement Due Date', render: (i) => {
               const d = i.expectedReplacementDate || i.expectedReturnDate;
@@ -233,7 +241,7 @@ export default function EmployeeDetail() {
           </Button>
         </div>
 
-        <DataTable 
+        <DataTable
           data={empIssuances}
           keyExtractor={(item) => item.id}
           emptyState={<EmptyState icon={<Clock />} title="No history found" />}
@@ -241,14 +249,15 @@ export default function EmployeeDetail() {
             { key: 'reference', header: 'Reference', render: (i) => <span className="font-mono text-xs">{i.reference || i.id}</span> },
             { key: 'item', header: 'Equipment', render: (i) => {
               const item = ppeItems.find(p => p.id === i.ppeItemId);
-              return item ? (language === 'en' ? item.nameEn : item.nameAr) : (i.kitId ? 'Kit' : i.ppeItemId);
+              const name = item ? item.name : (i.kitId ? 'Kit' : i.ppeItemId);
+              return i.serialIds?.length ? <span>{name} <span className="text-[10px] font-mono text-accent">({serialsOf(i)})</span></span> : name;
             }},
-            { key: 'qty', header: 'Qty', render: (i) => i.quantity },
+            { key: 'qty', header: 'Qty', render: (i) => `${i.quantity} ${symOf(i.ppeItemId)}` },
             { key: 'date', header: 'Date', render: (i) => format(new Date(i.issueDate), 'yyyy-MM-dd') },
             { key: 'status', header: 'Status', render: (i) => (
-              <StatusBadge 
-                status={i.status === 'issued' ? 'info' : i.status === 'returned' ? 'success' : 'neutral'} 
-                label={i.status} 
+              <StatusBadge
+                status={i.status === 'issued' ? 'info' : i.status === 'returned' ? 'success' : 'neutral'}
+                label={i.status}
               />
             )},
             { key: 'signatures', header: 'Captured Signatures', render: (i) => (

@@ -91,7 +91,7 @@ export default function Employees() {
           )},
           { key: 'position', header: 'Job Position', render: (emp) => {
             const jp = jobPositions.find(j => j.id === emp.jobPositionId);
-            return jp ? (language === 'en' ? jp.nameEn : jp.nameAr) : '-';
+            return jp ? jp.name : '-';
           }},
           { key: 'activePPE', header: 'Currently Held PPE', render: (emp) => {
             const activeCount = issuances.filter(i => i.employeeId === emp.id && i.status === 'issued').length;

@@ -15,7 +15,7 @@ import { format, subDays, isWithinInterval, startOfDay, endOfDay } from 'date-fn
 export default function Dashboard() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { currentUser, stockBalances, ppeItems, stockAdjustments, issuances, issuanceReturns, scrapEntries, batches, locations, kits } = usePPEStore();
+  const { currentUser, stockBalances, ppeItems, stockAdjustments, issuances, issuanceReturns, scrapEntries, batches, locations, kits, getUnitSymbol, units } = usePPEStore();
 
   const [activeTab, setActiveTab] = React.useState<'overview' | 'movements' | 'capacity' | 'kits'>('overview');
   
@@ -298,11 +298,11 @@ export default function Dashboard() {
                 lowStockAlerts.map((alert, idx) => (
                   <div key={idx} className="p-3.5 hover:bg-canvas transition-colors flex justify-between items-center text-xs">
                     <div>
-                      <div className="font-semibold text-ink">{language === 'en' ? alert.item.nameEn : alert.item.nameAr}</div>
-                      <div className="text-body font-mono text-[11px]">{alert.item.itemCode} &middot; {alert.location.nameEn}</div>
+                      <div className="font-semibold text-ink">{alert.item.name}</div>
+                      <div className="text-body font-mono text-[11px]">{alert.item.itemCode} &middot; {alert.location.name}</div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm font-bold text-safety-red">{alert.qty} {alert.item.uom}</div>
+                      <div className="text-sm font-bold text-safety-red">{alert.qty} {getUnitSymbol(alert.item.id)}</div>
                       <div className="text-[10px] text-body">Reorder: {alert.reorderLevel}</div>
                     </div>
                   </div>
@@ -323,7 +323,7 @@ export default function Dashboard() {
                 columns={[
                   { key: 'ref', header: 'Reference', render: (i) => <span className="font-mono text-xs font-semibold">{i.reference || i.id}</span> },
                   { key: 'date', header: 'Date', render: (i) => format(new Date(i.issueDate), 'MMM d') },
-                  { key: 'qty', header: 'Qty', render: (i) => <span className="font-bold">{i.quantity}</span> },
+                  { key: 'qty', header: 'Qty', render: (i) => <span className="font-bold">{i.quantity} {getUnitSymbol(i.ppeItemId)}</span> },
                   { key: 'status', header: 'Status', render: (i) => (
                     <StatusBadge status={i.status === 'issued' ? 'info' : 'success'} label={i.status} />
                   )}
@@ -472,7 +472,7 @@ export default function Dashboard() {
                   >
                     <div className="flex justify-between items-center mb-1.5">
                       <div>
-                        <span className="font-bold text-xs text-ink">{loc.nameEn}</span>
+                        <span className="font-bold text-xs text-ink">{loc.name}</span>
                         <span className="text-[11px] text-body ml-2 font-mono">({loc.code} &middot; {loc.site})</span>
                       </div>
                       <div className="flex items-center gap-2">
@@ -543,14 +543,14 @@ export default function Dashboard() {
                     {selectedLocationStock.map(b => (
                       <tr key={b.id} className="hover:bg-canvas/50">
                         <td className="p-2">
-                          <div className="font-semibold text-ink">{b.item?.nameEn || b.ppeItemId}</div>
+                          <div className="font-semibold text-ink">{b.item?.name || b.ppeItemId}</div>
                           <div className="text-[10px] text-body font-mono">{b.item?.itemCode}</div>
                         </td>
                         <td className="p-2 text-right font-bold text-safety-green">
                           {Math.max(0, b.quantityOnHand - (b.quarantinedOnHand || 0))}
                         </td>
                         <td className="p-2 text-right font-bold text-ink">
-                          {b.quantityOnHand}
+                          {b.quantityOnHand} {getUnitSymbol(b.ppeItemId)}
                         </td>
                       </tr>
                     ))}
@@ -581,7 +581,7 @@ export default function Dashboard() {
                 <div>
                   <div className="flex justify-between items-start">
                     <div>
-                      <h4 className="font-bold text-sm text-ink">{kit.nameEn}</h4>
+                      <h4 className="font-bold text-sm text-ink">{kit.name}</h4>
                       <p className="text-xs text-body font-mono mt-0.5">{kit.items.length} items bundled</p>
                     </div>
 

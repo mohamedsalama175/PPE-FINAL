@@ -22,8 +22,7 @@ export default function KitForm() {
   const isEdit = Boolean(id);
 
   const [formData, setFormData] = React.useState<Partial<Kit>>({
-    nameEn: '',
-    nameAr: '',
+    name: '',
     jobPositionId: '',
     items: [],
     active: true
@@ -41,8 +40,8 @@ export default function KitForm() {
 
   const handleSubmit = (e?: React.FormEvent, confirmedReason?: string) => {
     if (e) e.preventDefault();
-    if (!formData.nameEn || !formData.jobPositionId) {
-      addToast('Name (EN) and Job Position are required.', 'error');
+    if (!formData.name || !formData.jobPositionId) {
+      addToast('Name and Job Position are required.', 'error');
       return;
     }
     if (!formData.items || formData.items.length === 0) {
@@ -122,20 +121,12 @@ export default function KitForm() {
       <form onSubmit={e => handleSubmit(e)} className="bg-surface border border-border rounded-lg p-6 space-y-6 shadow-sm">
         <FormSection title="Kit Information">
           <div className="grid grid-cols-2 gap-4">
-            <FormGroup label="Kit Name (EN) *">
+            <FormGroup label="Kit Name *">
               <Input 
-                value={formData.nameEn} 
-                onChange={e => setFormData({...formData, nameEn: e.target.value})} 
+                value={formData.name} 
+                onChange={e => setFormData({...formData, name: e.target.value})} 
                 placeholder="e.g. Electrical Engineer Kit"
                 required 
-              />
-            </FormGroup>
-            <FormGroup label="Kit Name (AR)" dir="rtl">
-              <Input 
-                value={formData.nameAr} 
-                onChange={e => setFormData({...formData, nameAr: e.target.value})} 
-                placeholder="مثال: طقم مهندس كهرباء"
-                dir="rtl" 
               />
             </FormGroup>
           </div>
@@ -148,7 +139,7 @@ export default function KitForm() {
                 required
               >
                 <option value="">Select Job Position...</option>
-                {jobPositions.map(jp => <option key={jp.id} value={jp.id}>{jp.nameEn}</option>)}
+                {jobPositions.map(jp => <option key={jp.id} value={jp.id}>{jp.name}</option>)}
               </Select>
             </FormGroup>
           </div>
@@ -180,7 +171,7 @@ export default function KitForm() {
                         <option value="">Select Item...</option>
                         {ppeItems.filter(p => !p.deletedAt).map(p => (
                           <option key={p.id} value={p.id}>
-                            {p.itemCode} - {language === 'en' ? p.nameEn : p.nameAr} {!p.active ? '(Inactive)' : ''}
+                            {p.itemCode} - {p.name} {!p.active ? '(Inactive)' : ''}
                           </option>
                         ))}
                       </Select>

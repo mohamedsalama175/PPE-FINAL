@@ -40,6 +40,11 @@ import EmployeeDetail from './pages/EmployeeDetail';
 import HistoricalImport from './pages/HistoricalImport';
 import ModuleSettings from './pages/ModuleSettings';
 
+// Epic 11 (Units of Measure) and Epic 12 (Serial Numbers)
+import Units from './pages/Units';
+import UnitForm from './pages/UnitForm';
+import SerialNumbers from './pages/SerialNumbers';
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -63,6 +68,11 @@ export default function App() {
           <Route path="kits" element={<Kits />} />
           <Route path="kits/new" element={<KitForm />} />
           <Route path="kits/:id/edit" element={<KitForm />} />
+          <Route path="units" element={<Units />} />
+          <Route path="units/new" element={<UnitForm />} />
+          <Route path="units/:id/edit" element={<UnitForm />} />
+          <Route path="serials" element={<SerialNumbers />} />
+          <Route path="serials/:serialId" element={<SerialNumbers />} />
           
           <Route path="stock" element={<Stock />} />
           <Route path="stock/adjustments" element={<StockAdjustments />} />

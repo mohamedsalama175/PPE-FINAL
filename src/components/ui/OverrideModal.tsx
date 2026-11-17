@@ -27,7 +27,7 @@ export function OverrideModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (reason.trim().length < 5) return;
+    if (reason.trim().length < 10) return;
     onConfirm(reason.trim());
     onClose();
   };
@@ -67,7 +67,7 @@ export function OverrideModal({
               rows={3}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Provide a written operational explanation for overriding this protection (minimum 5 characters)..."
+              placeholder="Provide a written operational explanation for overriding this protection (minimum 10 characters)..."
               className="w-full text-xs p-2.5 rounded border border-border focus:outline-none focus:ring-1 focus:ring-accent bg-surface"
             />
             <p className="text-[11px] text-body mt-1">
@@ -79,7 +79,7 @@ export function OverrideModal({
             <Button type="button" variant="ghost" size="sm" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" variant="danger" size="sm" disabled={reason.trim().length < 5}>
+            <Button type="submit" variant="danger" size="sm" disabled={reason.trim().length < 10}>
               {actionLabel}
             </Button>
           </div>

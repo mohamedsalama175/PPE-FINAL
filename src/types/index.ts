@@ -11,8 +11,7 @@ export type StockCondition = 'New' | 'Used' | 'Scrap';
 
 export interface Location extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   site: string;
   locationType: LocationType;
   stockCondition: StockCondition;
@@ -31,23 +30,20 @@ export interface AttributeValue {
 
 export interface Attribute extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   values: AttributeValue[];
 }
 
 export interface ItemGroup extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   attributeIds: string[];
   requiresGenderMatch?: boolean;
 }
 
 export interface PPEItem extends BaseEntity {
   itemCode: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
   photoUrl?: string;
   category: string;
   itemGroupId: string;
@@ -55,8 +51,7 @@ export interface PPEItem extends BaseEntity {
   gender: 'Male' | 'Female' | 'Unisex';
   lifespanType: 'Days' | 'Months' | 'Years';
   lifespanValue: number;
-  descriptionEn: string;
-  descriptionAr: string;
+  description: string;
   manufacturer: string;
   model: string;
   standardCertification: string;
@@ -65,7 +60,55 @@ export interface PPEItem extends BaseEntity {
   locationIds: string[]; // Valid locations for this item
   locationReorderLevels?: { locationId: string; reorderLevel: number }[]; // Reorder level per location (PPE-001)
   variantAttributeValueIds: string[]; // default variants if applicable
-  uom: string;
+  unitId: string; // PPE-001 / PPE-051: reference to UnitOfMeasure.id
+  serialTracked: boolean; // PPE-001 / PPE-057: locked after the first transaction (PPE-002)
+}
+
+// Epic 11: Units of Measure (PPE-051 to PPE-056)
+export interface UnitOfMeasure extends BaseEntity {
+  code: string; // unique (case-insensitive, trashed included), one word, immutable after save
+  name: string; // English only (G13)
+  symbol: string; // short, shown next to quantities
+  createdAt: string;
+  createdBy: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+// Epic 12: Serial Numbers (PPE-057 to PPE-059)
+export type SerialStatus = 'In Stock' | 'Issued' | 'On Loan' | 'Scrapped' | 'Written off';
+export type SerialEventType = 'Stock in' | 'Transfer' | 'Issue' | 'Return' | 'Loan' | 'Loan return' | 'Scrap' | 'Write off';
+
+export interface SerialUnit {
+  id: string;
+  ppeItemId: string;
+  serial: string; // stored upper-case, unique per item
+  status: SerialStatus;
+  locationId?: string; // where the unit physically is (In Stock, or Scrapped at a Scrap location)
+  lastLocationId: string; // last physical location, used for Store Keeper scoping when issued or on loan
+  holderEmployeeId?: string; // when Issued
+  holderName?: string; // borrower name when On Loan
+  holderIssuanceId?: string; // issuance or loan that holds the unit
+  batchNumber?: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+// Append-only: never edited, never purged.
+export interface SerialEvent {
+  id: string;
+  serialUnitId: string;
+  type: SerialEventType;
+  date: string;
+  userId: string;
+  fromLocationId?: string;
+  toLocationId?: string;
+  reference?: string; // source document reference
+  holderEmployeeId?: string;
+  holderName?: string;
+  note?: string;
 }
 
 export interface KitItem {
@@ -76,16 +119,14 @@ export interface KitItem {
 }
 
 export interface Kit extends BaseEntity {
-  nameEn: string;
-  nameAr: string;
+  name: string;
   jobPositionId: string;
   items: KitItem[];
 }
 
 export interface JobPosition extends BaseEntity {
   code: string;
-  nameEn: string;
-  nameAr: string;
+  name: string;
 }
 
 export interface Employee extends BaseEntity {
@@ -137,6 +178,8 @@ export interface StockAdjustment {
   manufacturerExpiryDate?: string;
   supplierDeliveryNote?: string;
   destinationLocationId?: string; // Optional destination (e.g. Scrap location for damaged goods)
+  serialNumbers?: string[]; // PPE-057: Stock IN of a tracked item (registered on apply)
+  serialIds?: string[]; // PPE-058: Stock OUT of a tracked item (picked units)
   status: 'pending' | 'approved' | 'rejected' | 'applied';
   submittedBy: string;
   reviewedBy?: string;
@@ -150,6 +193,8 @@ export interface LoanLineItem {
   returnedQty?: number;
   condition?: 'good' | 'damaged' | 'worn_out' | 'lost';
   status: 'open' | 'returned';
+  serialIds?: string[]; // PPE-058: serial units on loan for a tracked item
+  returnedSerialIds?: string[];
 }
 
 export interface Issuance {
@@ -178,6 +223,8 @@ export interface Issuance {
   isLoan?: boolean;
   isHistorical?: boolean;
   lines?: LoanLineItem[];
+  serialIds?: string[]; // PPE-058: serial units issued on this issuance (tracked items)
+  returnedSerialIds?: string[];
 }
 
 export interface IssuanceReturn {
@@ -228,6 +275,7 @@ export interface OpeningBalanceLine {
   expiryDate?: string;
   quantity: number;
   costPerUnit?: number;
+  serialNumbers?: string[]; // PPE-057: one per unit for a tracked item; quantity = serialNumbers.length
 }
 
 export interface OpeningBalance {

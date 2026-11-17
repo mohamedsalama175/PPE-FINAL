@@ -28,8 +28,7 @@ export default function ItemGroups() {
   const filteredItems = React.useMemo(() => {
     return itemGroups.filter(item => {
       const matchSearch = item.code.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameEn.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameAr.includes(search);
+                          item.name.toLowerCase().includes(search.toLowerCase());
       const isNotDeleted = !item.deletedAt;
       return matchSearch && isNotDeleted;
     });
@@ -112,7 +111,7 @@ export default function ItemGroups() {
               onClick={() => setSelectedGroup(item)}
               className="font-medium text-ink cursor-pointer hover:underline"
             >
-              {language === 'en' ? item.nameEn : item.nameAr}
+              {item.name}
             </div>
           )},
           { key: 'attributes', header: 'Linked Attributes', render: (item) => (
@@ -121,7 +120,7 @@ export default function ItemGroups() {
                 const attr = attributes.find(a => a.id === attrId);
                 return attr ? (
                   <span key={attrId} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-canvas border border-border text-body">
-                    {language === 'en' ? attr.nameEn : attr.nameAr}
+                    {attr.name}
                   </span>
                 ) : null;
               })}

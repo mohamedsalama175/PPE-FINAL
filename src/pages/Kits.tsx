@@ -27,8 +27,7 @@ export default function Kits() {
 
   const filteredItems = React.useMemo(() => {
     return kits.filter(item => {
-      const matchSearch = item.nameEn.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameAr.includes(search);
+      const matchSearch = item.name.toLowerCase().includes(search.toLowerCase());
       const isNotDeleted = !item.deletedAt;
       return matchSearch && isNotDeleted;
     });
@@ -56,7 +55,7 @@ export default function Kits() {
       setOverrideTarget({ kit: item, action: 'delete', reasons: check.reasons });
       return;
     }
-    if (!window.confirm(`Are you sure you want to delete kit ${item.nameEn}?`)) return;
+    if (!window.confirm(`Are you sure you want to delete kit ${item.name}?`)) return;
     const res = softDeleteEntity('kits', item.id);
     if (!res.success) addToast(res.message || 'Error deleting kit.', 'error');
     else addToast('Kit moved to Trash Bin.', 'success');
@@ -103,14 +102,14 @@ export default function Kits() {
               onClick={() => setSelectedKit(item)}
               className="font-medium text-ink cursor-pointer hover:underline"
             >
-              {language === 'en' ? item.nameEn : item.nameAr}
+              {item.name}
             </div>
           )},
           { key: 'jobPosition', header: 'Job Position', render: (item) => {
             const jp = jobPositions.find(j => j.id === item.jobPositionId);
             return jp ? (
               <span className="font-semibold text-accent">
-                {language === 'en' ? jp.nameEn : jp.nameAr}
+                {jp.name}
               </span>
             ) : '-';
           }},
@@ -155,7 +154,7 @@ export default function Kits() {
       {/* G2 In-Use Protection Override Modal */}
       <OverrideModal 
         isOpen={!!overrideTarget}
-        entityName={overrideTarget?.kit.nameEn || ''}
+        entityName={overrideTarget?.kit.name || ''}
         reasons={overrideTarget?.reasons || []}
         actionLabel={overrideTarget?.action === 'delete' ? 'Override and Delete' : 'Override and Deactivate'}
         onClose={() => setOverrideTarget(null)}

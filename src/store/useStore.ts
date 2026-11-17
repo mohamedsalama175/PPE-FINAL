@@ -4,14 +4,35 @@ import * as mockData from './mockData';
 import { 
   JobPosition, Location, Attribute, ItemGroup, PPEItem, Kit, Employee, 
   StockBalance, StockMovement, StockAdjustment, Issuance, IssuanceReturn, 
-  ScrapEntry, ModuleSettings, BaseEntity, OpeningBalance, Batch, AuditLog, LoanLineItem
+  ScrapEntry, ModuleSettings, BaseEntity, OpeningBalance, Batch, AuditLog, LoanLineItem,
+  UnitOfMeasure, SerialUnit, SerialEvent, SerialStatus
 } from '../types';
 import { addDays, addMonths, addYears } from 'date-fns';
+import { seedDefaultUnits, SystemFlags } from './migrations';
+import { registerSerialUnits, moveSerialUnits, MoveParams } from './serialEngine';
+import { SerialEntryError, validateSerialEntry } from '../lib/serials';
 
 export interface InUseCheckResult {
   inUse: boolean;
   reasons: string[];
 }
+
+export type ActionResult = { success: boolean; message?: string };
+
+/** G2: Admin override reason must be at least this long (PPE-002). */
+export const OVERRIDE_REASON_MIN = 10;
+
+/** PPE-051: one word, letters, digits, dash or underscore. */
+export const UNIT_CODE_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** Entity collections that support Trash Bin (G10). */
+export type TrashableCollection = 'ppeItems' | 'locations' | 'attributes' | 'itemGroups' | 'kits' | 'units';
+
+const isScrapLocation = (l?: Location) => !!l && (l.stockCondition === 'Scrap' || l.locationType === 'Scrap');
+
+/** Stock OUT reasons (PPE-026) that destroy a serial unit rather than write it off. */
+const SCRAP_REASONS = ['Physical Damage', 'Expired Disposal', 'Damaged', 'Damaged in Store', 'Expired'];
+const isQuarantineReason = (r?: string) => !!r && r.toLowerCase().startsWith('quarantin');
 
 export interface AppState {
   currentUser: Employee;
@@ -35,7 +56,22 @@ export interface AppState {
   openingBalances: OpeningBalance[];
   batches: Batch[];
   auditLogs: AuditLog[];
-  
+  units: UnitOfMeasure[];
+  serialUnits: SerialUnit[];
+  serialEvents: SerialEvent[];
+  systemFlags: SystemFlags;
+
+  // Units of Measure (Epic 11)
+  unitUsage: (unitId: string) => { itemIds: string[]; itemCount: number; trashedItemCount: number };
+  runDefaultUnitSeed: () => { created: string[] };
+  getUnitSymbol: (ppeItemId?: string) => string;
+
+  // Serial Numbers (Epic 12)
+  describeSerialLocation: (unit: SerialUnit) => string;
+  validateNewSerials: (ppeItemId: string, serials: string[]) => SerialEntryError[];
+  inStockSerials: (ppeItemId: string, locationId: string, batchNumber?: string) => SerialUnit[];
+  visibleSerialUnits: (user?: Employee) => SerialUnit[];
+
   // G1 Audit Logger
   recordAudit: (params: {
     action: string;
@@ -52,23 +88,23 @@ export interface AppState {
   checkInUse: (entityName: 'ppeItems' | 'locations' | 'attributes' | 'itemGroups' | 'kits', id: string) => InUseCheckResult;
   itemHasTransactions: (itemId: string) => boolean;
   locationHasStock: (locationId: string) => boolean;
-  saveEntity: <T extends BaseEntity>(entityName: keyof AppState, entity: T, reason?: string) => void;
-  softDeleteEntity: (entityName: keyof AppState, id: string, overrideReason?: string) => { success: boolean; message?: string };
-  toggleEntityActive: (entityName: keyof AppState, id: string, active: boolean, overrideReason?: string) => { success: boolean; message?: string };
-  restoreEntity: (entityName: keyof AppState, id: string) => { success: boolean; message?: string };
-  purgeEntity: (entityName: keyof AppState, id: string) => { success: boolean; message?: string };
+  saveEntity: <T extends BaseEntity>(entityName: keyof AppState, entity: T, reason?: string) => ActionResult;
+  softDeleteEntity: (entityName: keyof AppState, id: string, overrideReason?: string) => ActionResult;
+  toggleEntityActive: (entityName: keyof AppState, id: string, active: boolean, overrideReason?: string) => ActionResult;
+  restoreEntity: (entityName: keyof AppState, id: string, newCode?: string) => ActionResult & { codeTaken?: boolean };
+  purgeEntity: (entityName: keyof AppState, id: string) => ActionResult;
   purgeEligibleTrash: () => { purgedCount: number };
 
   // Stock & Opening Balance
-  saveOpeningBalance: (ob: OpeningBalance) => void;
-  approveOpeningBalance: (id: string, approverId: string) => { success: boolean; message?: string };
+  saveOpeningBalance: (ob: OpeningBalance) => ActionResult;
+  approveOpeningBalance: (id: string, approverId: string) => ActionResult;
   rejectOpeningBalance: (id: string, reason: string) => void;
   closeOpeningBalance: (locationId: string, byId: string) => void;
 
   // Stock Adjustments & Movements
   adjustStock: (adjustment: any) => { success: boolean; message?: string; id?: string };
-  reviewAdjustment: (id: string, status: 'approved' | 'rejected', reviewerId: string) => void;
-  transferStock: (ppeItemId: string, fromLocationId: string, toLocationId: string, batchNumber: string, quantity: number, byId: string) => { success: boolean; message?: string };
+  reviewAdjustment: (id: string, status: 'approved' | 'rejected', reviewerId: string) => ActionResult;
+  transferStock: (ppeItemId: string, fromLocationId: string, toLocationId: string, batchNumber: string, quantity: number, byId: string, serialIds?: string[]) => ActionResult;
   
   // G9 Quarantine Management
   quarantineBatch: (batchId: string, quantity: number, reason: string, byId: string) => void;
@@ -77,7 +113,7 @@ export interface AppState {
   // Issuances & Kits
   calculateLifespanDate: (item: PPEItem, startDate?: Date) => string;
   validateGenderMatch: (employeeId: string, ppeItemId: string, variantValueId?: string) => { valid: boolean; reason?: string };
-  issueItem: (issuance: Omit<Issuance, 'id' | 'status'>) => { success: boolean; id: string };
+  issueItem: (issuance: Omit<Issuance, 'id' | 'status'>) => { success: boolean; id: string; message?: string };
   issueKit: (data: {
     employeeId: string;
     kitId: string;
@@ -85,10 +121,11 @@ export interface AppState {
     quantity: number;
     itemVariants?: Record<string, string>;
     selectedItemIds?: string[];
+    itemSerials?: Record<string, string[]>; // PPE-058: serial unit ids per tracked kit item
     storeKeeperSignature?: string;
     receiverSignature?: string;
     issuedBy: string;
-  }) => { success: boolean; issuanceIds: string[] };
+  }) => { success: boolean; issuanceIds: string[]; message?: string };
 
   // Loans (PPE-036, PPE-037, PPE-041)
   issueLoan: (data: {
@@ -99,14 +136,14 @@ export interface AppState {
     hostEmployeeId?: string;
     locationId: string;
     expectedReturnDate: string;
-    items: { ppeItemId: string; quantity: number; batchNumber?: string }[];
+    items: { ppeItemId: string; quantity: number; batchNumber?: string; serialIds?: string[] }[];
     storeKeeperSignature?: string;
     receiverSignature?: string;
     issuedBy: string;
-  }) => { success: boolean; reference: string; id?: string };
+  }) => { success: boolean; reference: string; id?: string; message?: string };
   returnLoan: (data: {
     loanId: string;
-    returnedLines: { lineId: string; quantity: number; condition: 'good' | 'damaged' | 'worn_out' | 'lost' }[];
+    returnedLines: { lineId: string; quantity: number; condition: 'good' | 'damaged' | 'worn_out' | 'lost'; serialIds?: string[] }[];
     storeKeeperSignature?: string;
     receiverSignature?: string;
     returnedBy: string;
@@ -123,8 +160,9 @@ export interface AppState {
       quantity?: number;
       storeKeeperSignature?: string;
       employeeSignature?: string;
+      serialIds?: string[]; // PPE-058: returned serial units of a tracked item
     }
-  ) => void;
+  ) => ActionResult;
   reverseScrap: (id: string, reason: string, reversedBy: string) => void;
 
   // Employee Lifecycle & Tracking (PPE-042, PPE-043, G12)
@@ -137,6 +175,85 @@ export interface AppState {
   updateModuleSettings: (settings: Partial<ModuleSettings>) => void;
   updateExpirySettings: (settings: ModuleSettings) => void;
 }
+
+/** PPE-057: every tracked line of an opening balance needs valid, unique serials (across all its lines too). */
+function validateOpeningBalanceSerials(state: AppState, ob: OpeningBalance): string | null {
+  const byItem = new Map<string, string[]>();
+  for (const line of ob.lines) {
+    const item = state.ppeItems.find(p => p.id === line.ppeItemId);
+    if (!item?.serialTracked) continue;
+    const serials = line.serialNumbers || [];
+    if (serials.length === 0) return `${item.itemCode} is serial tracked: enter one serial number per unit.`;
+    byItem.set(item.id, [...(byItem.get(item.id) || []), ...serials]);
+  }
+  for (const [itemId, serials] of byItem) {
+    const errors = state.validateNewSerials(itemId, serials);
+    if (errors.length > 0) return errors[0].message;
+  }
+  return null;
+}
+
+/** Decrease batch availability by one per serial, grouped by the serial's batch. */
+function deductSerialBatches(batches: Batch[], units: SerialUnit[], locationId: string): Batch[] {
+  const next = [...batches];
+  const counts = new Map<string, number>();
+  for (const u of units) if (u.batchNumber) counts.set(u.batchNumber, (counts.get(u.batchNumber) || 0) + 1);
+  for (const [batchNumber, n] of counts) {
+    const idx = next.findIndex(b => b.batchNumber === batchNumber && b.ppeItemId === units[0].ppeItemId && b.locationId === locationId);
+    if (idx >= 0) {
+      const avail = Math.max(0, next[idx].availableQty - n);
+      next[idx] = { ...next[idx], availableQty: avail, status: avail <= 0 ? 'Depleted' : 'Active' };
+    }
+  }
+  return next;
+}
+
+/**
+ * PPE-058 Stock OUT: the picked units take the reason's status. Routed to a Scrap location or a
+ * damage / disposal reason means Scrapped; any other reason means Written off.
+ */
+function stockOutMove(adjustment: any, ppeItemId: string, serialIds: string[]): MoveParams {
+  const scrapped = !!adjustment.destinationLocationId || SCRAP_REASONS.includes(adjustment.reasonCategory);
+  return {
+    ppeItemId,
+    serialIds,
+    expect: { status: 'In Stock', locationId: adjustment.locationId },
+    to: { status: scrapped ? 'Scrapped' : 'Written off', locationId: adjustment.destinationLocationId || undefined },
+    eventTypes: [scrapped ? 'Scrap' : 'Write off'],
+    userId: adjustment.submittedBy,
+    reference: adjustment.reference,
+    note: `${adjustment.reasonCategory}: ${adjustment.reason}`,
+  };
+}
+
+/**
+ * PPE-037 / PPE-038: where a returned serial goes. Good goes back In Stock (the Used location),
+ * Damaged or Worn out is scrapped automatically, Lost (or damage not physically received) is written off.
+ */
+function serialReturnTarget(
+  condition: 'good' | 'damaged' | 'worn_out' | 'lost',
+  usedLocationId: string,
+  scrapLocationId: string,
+  physicallyReceived = true
+): { to: MoveParams['to']; extraEvents: MoveParams['eventTypes'] } {
+  if (condition === 'good') return { to: { status: 'In Stock', locationId: usedLocationId }, extraEvents: [] };
+  if ((condition === 'damaged' || condition === 'worn_out') && physicallyReceived) {
+    return { to: { status: 'Scrapped', locationId: scrapLocationId }, extraEvents: ['Scrap'] };
+  }
+  return { to: { status: 'Written off' }, extraEvents: ['Write off'] };
+}
+
+/** Add (or subtract) quantity on a stock balance row, creating it when needed. */
+function bumpBalance(balances: StockBalance[], ppeItemId: string, locationId: string, delta: number): StockBalance[] {
+  const next = [...balances];
+  const idx = next.findIndex(b => b.ppeItemId === ppeItemId && b.locationId === locationId);
+  if (idx >= 0) next[idx] = { ...next[idx], quantityOnHand: Math.max(0, next[idx].quantityOnHand + delta) };
+  else if (delta > 0) next.push({ id: generateId(), ppeItemId, locationId, quantityOnHand: delta, quarantinedOnHand: 0 });
+  return next;
+}
+
+// PPE-056: default units are created once at setup, guarded by the one-time marker.
+const initialUnitSeed = seedDefaultUnits(mockData.mockUnits, {}, '2026-08-01T08:00:00Z');
 
 export const usePPEStore = create<AppState>((set, get) => ({
   currentUser: mockData.mockEmployees[0], // Admin by default
@@ -160,6 +277,89 @@ export const usePPEStore = create<AppState>((set, get) => ({
   openingBalances: mockData.mockOpeningBalances,
   batches: mockData.mockBatches,
   auditLogs: mockData.mockAuditLogs,
+  units: initialUnitSeed.units,
+  serialUnits: mockData.mockSerialUnits,
+  serialEvents: mockData.mockSerialEvents,
+  systemFlags: initialUnitSeed.flags,
+
+  // ---------------------------------------------------------------------------
+  // Units of Measure (Epic 11)
+  // ---------------------------------------------------------------------------
+  unitUsage: (unitId) => {
+    const users = get().ppeItems.filter(p => p.unitId === unitId);
+    return {
+      itemIds: users.filter(p => !p.deletedAt).map(p => p.id),
+      itemCount: users.filter(p => !p.deletedAt).length, // PPE-053: active + inactive, excludes trashed
+      trashedItemCount: users.filter(p => !!p.deletedAt).length,
+    };
+  },
+
+  runDefaultUnitSeed: () => {
+    const state = get();
+    const res = seedDefaultUnits(state.units, state.systemFlags);
+    if (res.created.length === 0 && state.systemFlags.defaultUnitsSeeded) return { created: [] };
+    set({ units: res.units, systemFlags: res.flags });
+    if (res.created.length > 0) {
+      get().recordAudit({
+        action: 'CREATE',
+        objectType: 'units',
+        objectReference: res.created.join(', '),
+        details: `Default units seeded: ${res.created.join(', ')}`,
+        performedBy: 'system',
+      });
+    }
+    return { created: res.created };
+  },
+
+  getUnitSymbol: (ppeItemId) => {
+    const state = get();
+    const item = state.ppeItems.find(p => p.id === ppeItemId);
+    return state.units.find(u => u.id === item?.unitId)?.symbol || '';
+  },
+
+  // ---------------------------------------------------------------------------
+  // Serial Numbers (Epic 12)
+  // ---------------------------------------------------------------------------
+  describeSerialLocation: (unit) => {
+    const state = get();
+    const locName = (id?: string) => state.locations.find(l => l.id === id)?.name || id || '-';
+    switch (unit.status) {
+      case 'In Stock': return `In Stock at ${locName(unit.locationId)}`;
+      case 'Issued': {
+        const emp = state.employees.find(e => e.id === unit.holderEmployeeId);
+        return `Issued to ${emp ? `${emp.name} (${emp.employeeCode})` : unit.holderEmployeeId || 'an employee'}`;
+      }
+      case 'On Loan': return `On Loan to ${unit.holderName || 'a borrower'}`;
+      case 'Scrapped': return unit.locationId ? `Scrapped at ${locName(unit.locationId)}` : 'Scrapped';
+      case 'Written off': return 'Written off';
+    }
+  },
+
+  validateNewSerials: (ppeItemId, serials) => {
+    const state = get();
+    const byItem = new Map(state.serialUnits.filter(u => u.ppeItemId === ppeItemId).map(u => [u.serial, u]));
+    return validateSerialEntry(serials, s => {
+      const u = byItem.get(s);
+      return u ? state.describeSerialLocation(u) : null;
+    });
+  },
+
+  inStockSerials: (ppeItemId, locationId, batchNumber) =>
+    get().serialUnits
+      .filter(u => u.ppeItemId === ppeItemId && u.status === 'In Stock' && u.locationId === locationId && (!batchNumber || u.batchNumber === batchNumber))
+      .sort((a, b) => a.serial.localeCompare(b.serial)),
+
+  // PPE-059 / PPE-023: Store Keepers see only serials at (or last at) their assigned locations.
+  visibleSerialUnits: (user) => {
+    const state = get();
+    const u = user || state.currentUser;
+    if (u.role === 'Admin' || u.role === 'HSE Supervisor') return state.serialUnits;
+    if (u.role === 'Store Keeper') {
+      const mine = new Set(state.locations.filter(l => l.assignedStoreKeeperIds?.includes(u.id)).map(l => l.id));
+      return state.serialUnits.filter(s => mine.has(s.locationId || s.lastLocationId));
+    }
+    return [];
+  },
 
   // G1 Immutable Audit Trail
   recordAudit: ({ action, objectType, objectReference, before, after, details, reason, performedBy }) => {
@@ -189,7 +389,11 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const hasAdjustments = state.stockAdjustments.some(a => a.ppeItemId === itemId);
     const hasMovements = state.stockMovements.some(m => m.ppeItemId === itemId);
     const hasBatches = state.batches.some(b => b.ppeItemId === itemId);
-    return hasIssuances || hasAdjustments || hasMovements || hasBatches;
+    // Opening balance lines count once submitted (a Draft is not a transaction yet).
+    const hasOpeningBalance = state.openingBalances.some(o => o.status !== 'Draft' && o.status !== 'Rejected' && o.lines.some(l => l.ppeItemId === itemId));
+    const hasSerials = state.serialUnits.some(u => u.ppeItemId === itemId);
+    const hasScrap = state.scrapEntries.some(s => s.ppeItemId === itemId);
+    return hasIssuances || hasAdjustments || hasMovements || hasBatches || hasOpeningBalance || hasSerials || hasScrap;
   },
 
   locationHasStock: (locationId: string) => {
@@ -283,7 +487,62 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const existingIdx = list.findIndex(e => e.id === entity.id);
     const isNew = existingIdx < 0;
     const before = !isNew ? list[existingIdx] : undefined;
-    const entityToSave = { ...entity, id: entity.id || generateId() };
+    let entityToSave: any = { ...entity, id: entity.id || generateId() };
+
+    // Epic 11: Units of Measure (PPE-051, PPE-052)
+    if (entityName === 'units') {
+      const u = entityToSave as UnitOfMeasure;
+      const now = new Date().toISOString();
+      const code = String(u.code ?? '').trim();
+      if (isNew) {
+        if (!code) return { success: false, message: 'Code is required.' };
+        if (!UNIT_CODE_PATTERN.test(code)) return { success: false, message: 'Code must be one word (letters, digits, dash or underscore).' };
+        // Trashed units still count for uniqueness; upper and lower case count as the same.
+        if (state.units.some(x => x.code.toUpperCase() === code.toUpperCase())) {
+          return { success: false, message: `Code ${code.toUpperCase()} already exists (including units in the Trash Bin).` };
+        }
+      } else if (code.toUpperCase() !== String(before.code).toUpperCase()) {
+        return { success: false, message: 'Code cannot change after saving.' };
+      }
+      if (!String(u.name ?? '').trim()) return { success: false, message: 'Name is required.' };
+      if (!String(u.symbol ?? '').trim()) return { success: false, message: 'Symbol is required.' };
+      if (!isNew && before.active && u.active === false) {
+        const usage = state.unitUsage(u.id);
+        const total = usage.itemCount + usage.trashedItemCount;
+        if (total > 0) return { success: false, message: `Cannot deactivate: ${total} item(s) use this unit (including items in the Trash Bin). There is no override.` };
+      }
+      entityToSave = {
+        ...u,
+        code: isNew ? code.toUpperCase() : before.code,
+        name: u.name.trim(),
+        symbol: u.symbol.trim(),
+        active: u.active !== false,
+        deletedAt: isNew ? null : before.deletedAt,
+        createdAt: isNew ? now : before.createdAt,
+        createdBy: isNew ? state.currentUser.id : before.createdBy,
+        updatedAt: isNew ? undefined : now,
+        updatedBy: isNew ? undefined : state.currentUser.id,
+      };
+    }
+
+    // PPE-001 / PPE-002: unit reference and first-transaction locks
+    if (entityName === 'ppeItems') {
+      const item = entityToSave as PPEItem;
+      const unit = state.units.find(x => x.id === item.unitId);
+      if (!unit || unit.deletedAt) return { success: false, message: 'Unit of Measure is required.' };
+      if (!unit.active && (isNew || before.unitId !== item.unitId)) {
+        return { success: false, message: `Unit ${unit.code} is inactive. Pick an active unit.` };
+      }
+      entityToSave = { ...item, serialTracked: !!item.serialTracked };
+      if (!isNew && state.itemHasTransactions(item.id)) {
+        if (item.itemCode !== before.itemCode) {
+          return { success: false, message: 'Item Code is locked after the item\'s first transaction.' };
+        }
+        if (!!item.serialTracked !== !!before.serialTracked) {
+          return { success: false, message: 'Serial Number tracked is locked after the item\'s first transaction.' };
+        }
+      }
+    }
 
     set((s) => {
       if (isNew) {
@@ -298,16 +557,26 @@ export const usePPEStore = create<AppState>((set, get) => ({
     get().recordAudit({
       action: isNew ? 'CREATE' : 'UPDATE',
       objectType: String(entityName),
-      objectReference: entityToSave.id,
+      objectReference: entityToSave.code || entityToSave.itemCode || entityToSave.id,
       before,
       after: entityToSave,
       reason
     });
+    return { success: true };
   },
 
   softDeleteEntity: (entityName, id, overrideReason) => {
     const state = get();
     const currentUser = state.currentUser;
+
+    // PPE-055: a unit used by any item (trashed included) cannot be trashed. No override.
+    if (entityName === 'units') {
+      const usage = state.unitUsage(id);
+      const total = usage.itemCount + usage.trashedItemCount;
+      if (total > 0) {
+        return { success: false, message: `Cannot move to Trash: ${total} item(s) use this unit (including items in the Trash Bin). There is no override.` };
+      }
+    }
 
     if (['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits'].includes(entityName as string)) {
       if (entityName === 'locations') {
@@ -333,8 +602,8 @@ export const usePPEStore = create<AppState>((set, get) => ({
         if (!isAdmin) {
           return { success: false, message: `Cannot delete: in-use protection triggered. ${inUseCheck.reasons.join(' ')}` };
         }
-        if (!overrideReason || overrideReason.trim().length < 5) {
-          return { success: false, message: `Admin override requires a valid justification reason (at least 5 characters). In-use reasons: ${inUseCheck.reasons.join(' ')}` };
+        if (!overrideReason || overrideReason.trim().length < OVERRIDE_REASON_MIN) {
+          return { success: false, message: `Admin override requires a reason of at least ${OVERRIDE_REASON_MIN} characters. In-use reasons: ${inUseCheck.reasons.join(' ')}` };
         }
       }
     }
@@ -366,6 +635,15 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const state = get();
     const currentUser = state.currentUser;
 
+    // PPE-052 / PPE-053: a unit in use (trashed items included) cannot be deactivated. No override.
+    if (!active && entityName === 'units') {
+      const usage = state.unitUsage(id);
+      const total = usage.itemCount + usage.trashedItemCount;
+      if (total > 0) {
+        return { success: false, message: `Cannot deactivate: ${total} item(s) use this unit (including items in the Trash Bin). There is no override.` };
+      }
+    }
+
     if (!active && ['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits'].includes(entityName as string)) {
       if (entityName === 'locations') {
         const loc = state.locations.find(l => l.id === id);
@@ -390,8 +668,8 @@ export const usePPEStore = create<AppState>((set, get) => ({
         if (!isAdmin) {
           return { success: false, message: `Cannot deactivate: in-use protection active. ${inUseCheck.reasons.join(' ')}` };
         }
-        if (!overrideReason || overrideReason.trim().length < 5) {
-          return { success: false, message: `Admin override requires a written reason. ${inUseCheck.reasons.join(' ')}` };
+        if (!overrideReason || overrideReason.trim().length < OVERRIDE_REASON_MIN) {
+          return { success: false, message: `Admin override requires a reason of at least ${OVERRIDE_REASON_MIN} characters. ${inUseCheck.reasons.join(' ')}` };
         }
       }
     }
@@ -419,17 +697,35 @@ export const usePPEStore = create<AppState>((set, get) => ({
     return { success: true };
   },
 
-  restoreEntity: (entityName, id) => {
+  restoreEntity: (entityName, id, newCode) => {
     const state = get();
     const list = state[entityName] as any[];
     const item = list.find(e => e.id === id);
     if (!item) return { success: false, message: 'Entity not found.' };
 
+    // PPE-048 / PPE-055: the code must not be taken by another record; Admin may give a new code.
+    const codeField = entityName === 'ppeItems' ? 'itemCode' : (entityName === 'kits' ? null : 'code');
+    let restoredCode: string | undefined;
+    if (codeField) {
+      const wanted = String(newCode ?? item[codeField] ?? '').trim();
+      if (!wanted) return { success: false, message: 'A code is required to restore.' };
+      if (entityName === 'units' && !UNIT_CODE_PATTERN.test(wanted)) {
+        return { success: false, message: 'Code must be one word (letters, digits, dash or underscore).' };
+      }
+      // Units: trashed units count for uniqueness. Other types: compare with records outside the Trash Bin.
+      const clash = list.some(e => e.id !== id && (entityName === 'units' || !e.deletedAt) &&
+        String(e[codeField] ?? '').toUpperCase() === wanted.toUpperCase());
+      if (clash) {
+        return { success: false, codeTaken: true, message: `Code ${wanted} is already used by another record. Enter a new code to restore.` };
+      }
+      restoredCode = entityName === 'units' ? wanted.toUpperCase() : wanted;
+    }
+
     // Dependency validation on restore
     if (entityName === 'ppeItems') {
       const parentGroup = state.itemGroups.find(g => g.id === item.itemGroupId);
       if (parentGroup && (parentGroup.deletedAt || !parentGroup.active)) {
-        return { success: false, message: `Cannot restore item: its Item Group (${parentGroup.nameEn}) is deleted or inactive. Restore the group first.` };
+        return { success: false, message: `Cannot restore item: its Item Group (${parentGroup.name}) is deleted or inactive. Restore the group first.` };
       }
     } else if (entityName === 'itemGroups') {
       const missingAttrs = item.attributeIds.filter((attrId: string) => {
@@ -442,7 +738,13 @@ export const usePPEStore = create<AppState>((set, get) => ({
     }
 
     const before = { ...item };
-    const updated = { ...item, active: true, deletedAt: null };
+    // PPE-055: a restored unit comes back Inactive; Admin turns it on.
+    const updated = {
+      ...item,
+      ...(codeField && restoredCode ? { [codeField]: restoredCode } : {}),
+      active: entityName === 'units' ? false : true,
+      deletedAt: null
+    };
 
     set((s) => ({
       [entityName]: (s[entityName] as any[]).map(e => e.id === id ? updated : e)
@@ -451,10 +753,12 @@ export const usePPEStore = create<AppState>((set, get) => ({
     get().recordAudit({
       action: 'RESTORE',
       objectType: String(entityName),
-      objectReference: id,
+      objectReference: (codeField && updated[codeField]) || id,
       before,
       after: updated,
-      reason: 'Restored from Trash Bin'
+      reason: restoredCode && codeField && restoredCode !== item[codeField]
+        ? `Restored from Trash Bin with new code ${restoredCode}`
+        : 'Restored from Trash Bin'
     });
 
     return { success: true };
@@ -466,7 +770,12 @@ export const usePPEStore = create<AppState>((set, get) => ({
     // Rule G10: Protect records with transaction history
     let hasHistory = false;
     if (entityName === 'ppeItems') {
-      hasHistory = state.issuances.some(i => i.ppeItemId === id) || state.stockMovements.some(m => m.ppeItemId === id);
+      // Serial history is never removed, so an item with serials is retained with it (PPE-059).
+      hasHistory = state.itemHasTransactions(id);
+    } else if (entityName === 'units') {
+      // PPE-055: only unused units can be trashed, but re-check before a permanent delete.
+      const usage = state.unitUsage(id);
+      hasHistory = usage.itemCount + usage.trashedItemCount > 0;
     } else if (entityName === 'locations') {
       hasHistory = state.stockMovements.some(m => m.locationId === id || m.toLocationId === id) || state.issuances.some(i => i.locationId === id);
     } else if (entityName === 'kits') {
@@ -488,7 +797,7 @@ export const usePPEStore = create<AppState>((set, get) => ({
     get().recordAudit({
       action: 'PERMANENT_PURGE',
       objectType: String(entityName),
-      objectReference: id,
+      objectReference: item.code || item.itemCode || item.name || id,
       before: item,
       reason: 'Permanently purged from Trash Bin'
     });
@@ -502,7 +811,7 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const now = new Date().getTime();
     let purgedCount = 0;
 
-    const types: (keyof AppState)[] = ['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits'];
+    const types: (keyof AppState)[] = ['ppeItems', 'locations', 'attributes', 'itemGroups', 'kits', 'units'];
     types.forEach(t => {
       const list = state[t] as any[];
       if (Array.isArray(list)) {
@@ -522,6 +831,17 @@ export const usePPEStore = create<AppState>((set, get) => ({
   },
 
   saveOpeningBalance: (ob) => {
+    // PPE-057: for a tracked item, quantity equals the serials entered; validate when it leaves Draft.
+    const state0 = get();
+    const lines = ob.lines.map(l => {
+      const item = state0.ppeItems.find(p => p.id === l.ppeItemId);
+      return item?.serialTracked ? { ...l, quantity: (l.serialNumbers || []).length } : l;
+    });
+    ob = { ...ob, lines };
+    if (ob.status !== 'Draft') {
+      const err = validateOpeningBalanceSerials(state0, ob);
+      if (err) return { success: false, message: err };
+    }
     set((state) => {
       const idx = state.openingBalances.findIndex(o => o.id === ob.id);
       if (idx >= 0) {
@@ -537,6 +857,7 @@ export const usePPEStore = create<AppState>((set, get) => ({
       objectReference: ob.id,
       after: ob
     });
+    return { success: true };
   },
 
   approveOpeningBalance: (id, approverId) => {
@@ -554,7 +875,28 @@ export const usePPEStore = create<AppState>((set, get) => ({
 
     const ref = ob.reference || `ADJ-OB-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
 
-    const newObs = state.openingBalances.map(o => 
+    // PPE-057: register one In Stock unit per serial for tracked lines. All lines or nothing.
+    const serialErr = validateOpeningBalanceSerials(state, ob);
+    if (serialErr) return { success: false, message: serialErr };
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    for (const line of ob.lines) {
+      const item = state.ppeItems.find(p => p.id === line.ppeItemId);
+      if (!item?.serialTracked) continue;
+      const res = registerSerialUnits(serialUnits, serialEvents, {
+        ppeItemId: line.ppeItemId,
+        serials: line.serialNumbers || [],
+        locationId: ob.locationId,
+        batchNumber: line.batchNumber,
+        userId: approverId,
+        reference: ref,
+      }, state.describeSerialLocation);
+      if (!res.ok) return { success: false, message: res.errors[0].message };
+      serialUnits = res.serialUnits;
+      serialEvents = res.serialEvents;
+    }
+
+    const newObs = state.openingBalances.map(o =>
       o.id === id ? { ...o, reference: ref, status: 'Approved' as const, approvedBy: approverId, approvedAt: new Date().toISOString() } : o
     );
 
@@ -595,7 +937,7 @@ export const usePPEStore = create<AppState>((set, get) => ({
       }
     });
 
-    set({ openingBalances: newObs, batches: [...state.batches, ...newBatches], stockBalances: newBalances });
+    set({ openingBalances: newObs, batches: [...state.batches, ...newBatches], stockBalances: newBalances, serialUnits, serialEvents });
 
     get().recordAudit({
       action: 'APPROVE_OPENING_BALANCE',
@@ -650,6 +992,42 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const status = adjustment.status || 'applied';
     const isApplied = status === 'applied';
     const adjId = adjustment.id || generateId();
+
+    // PPE-057 / PPE-058: serial-tracked items move by serial, quantity = serial count.
+    const trackedItem = state.ppeItems.find(p => p.id === adjustment.ppeItemId);
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    if (trackedItem?.serialTracked) {
+      if (isQuarantineReason(adjustment.reasonCategory)) {
+        return { success: false, message: 'Quarantine is not available for a serial-tracked item. Use a Stock OUT reason that names what happened to each unit.' };
+      }
+      if (adjustment.type === 'IN') {
+        const serials: string[] = adjustment.serialNumbers || [];
+        if (serials.length === 0) return { success: false, message: `${trackedItem.itemCode} is serial tracked: enter one serial number per unit.` };
+        const errors = state.validateNewSerials(trackedItem.id, serials);
+        if (errors.length > 0) return { success: false, message: errors[0].message };
+        adjustment = { ...adjustment, quantityDelta: serials.length };
+        if (isApplied) {
+          const res = registerSerialUnits(serialUnits, serialEvents, {
+            ppeItemId: trackedItem.id, serials, locationId: adjustment.locationId,
+            batchNumber: adjustment.batchNumber, userId: adjustment.submittedBy, reference: adjustment.reference,
+          }, state.describeSerialLocation);
+          if (!res.ok) return { success: false, message: res.errors[0].message };
+          serialUnits = res.serialUnits;
+          serialEvents = res.serialEvents;
+        }
+      } else {
+        const ids: string[] = adjustment.serialIds || [];
+        const res = moveSerialUnits(serialUnits, serialEvents, stockOutMove(adjustment, trackedItem.id, ids), state.describeSerialLocation);
+        if (!res.ok) return { success: false, message: res.message };
+        adjustment = { ...adjustment, quantityDelta: -ids.length };
+        if (isApplied) {
+          serialUnits = res.serialUnits;
+          serialEvents = res.serialEvents;
+        }
+      }
+    }
+
     const adjWithId: StockAdjustment = { ...adjustment, status, id: adjId, createdAt: new Date().toISOString() };
 
     let newBalances = [...state.stockBalances];
@@ -784,7 +1162,9 @@ export const usePPEStore = create<AppState>((set, get) => ({
       stockBalances: isApplied ? newBalances : state.stockBalances,
       batches: isApplied ? newBatches : state.batches,
       stockMovements: isApplied ? newMovements : state.stockMovements,
-      scrapEntries: isApplied ? newScraps : state.scrapEntries
+      scrapEntries: isApplied ? newScraps : state.scrapEntries,
+      serialUnits,
+      serialEvents
     }));
 
     get().recordAudit({
@@ -802,13 +1182,39 @@ export const usePPEStore = create<AppState>((set, get) => ({
   reviewAdjustment: (id, status, reviewerId) => {
     const state = get();
     const adj = state.stockAdjustments.find(a => a.id === id);
-    if (!adj) return;
+    if (!adj) return { success: false, message: 'Adjustment not found.' };
+    if (adj.status !== 'pending') return { success: false, message: 'Adjustment is not pending approval.' };
 
     let newBalances = [...state.stockBalances];
     let newBatches = [...state.batches];
     let newMovements = [...state.stockMovements];
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+
+    // PPE-057 / PPE-058: serials of a Risk Category III adjustment are registered or moved on approval.
+    const item = state.ppeItems.find(p => p.id === adj.ppeItemId);
+    if (status === 'approved' && item?.serialTracked) {
+      if (adj.type === 'IN') {
+        const res = registerSerialUnits(serialUnits, serialEvents, {
+          ppeItemId: item.id, serials: adj.serialNumbers || [], locationId: adj.locationId,
+          batchNumber: adj.batchNumber, userId: reviewerId, reference: adj.reference,
+        }, state.describeSerialLocation);
+        if (!res.ok) return { success: false, message: res.errors[0].message };
+        serialUnits = res.serialUnits;
+        serialEvents = res.serialEvents;
+      } else {
+        const res = moveSerialUnits(serialUnits, serialEvents, { ...stockOutMove(adj, item.id, adj.serialIds || []), userId: reviewerId }, state.describeSerialLocation);
+        if (!res.ok) return { success: false, message: res.message };
+        serialUnits = res.serialUnits;
+        serialEvents = res.serialEvents;
+      }
+    }
 
     if (status === 'approved') {
+      // Stock OUT routed to a Scrap location lands there on approval, as it does when posted directly.
+      if (adj.destinationLocationId && adj.quantityDelta < 0) {
+        newBalances = bumpBalance(newBalances, adj.ppeItemId, adj.destinationLocationId, Math.abs(adj.quantityDelta));
+      }
       const balIdx = newBalances.findIndex(b => b.ppeItemId === adj.ppeItemId && b.locationId === adj.locationId);
       if (balIdx >= 0) {
         newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: Math.max(0, newBalances[balIdx].quantityOnHand + adj.quantityDelta) };
@@ -859,7 +1265,9 @@ export const usePPEStore = create<AppState>((set, get) => ({
       stockAdjustments: state.stockAdjustments.map(a => a.id === id ? { ...a, status, reviewedBy: reviewerId } : a),
       stockBalances: status === 'approved' ? newBalances : state.stockBalances,
       batches: status === 'approved' ? newBatches : state.batches,
-      stockMovements: status === 'approved' ? newMovements : state.stockMovements
+      stockMovements: status === 'approved' ? newMovements : state.stockMovements,
+      serialUnits,
+      serialEvents
     });
 
     get().recordAudit({
@@ -868,15 +1276,37 @@ export const usePPEStore = create<AppState>((set, get) => ({
       objectReference: adj.reference,
       performedBy: reviewerId
     });
+    return { success: true };
   },
 
   // Stock Transfer with G6 Condition & Capacity Enforcement
-  transferStock: (ppeItemId, fromLocationId, toLocationId, batchNumber, quantity, byId) => {
+  transferStock: (ppeItemId, fromLocationId, toLocationId, batchNumber, quantity, byId, serialIds) => {
     const state = get();
     const fromLoc = state.locations.find(l => l.id === fromLocationId);
     const toLoc = state.locations.find(l => l.id === toLocationId);
 
     if (!fromLoc || !toLoc) return { success: false, message: 'Invalid source or destination location.' };
+    if (fromLocationId === toLocationId) return { success: false, message: 'Source and destination must be different.' };
+
+    // PPE-058: a tracked item transfers picked serials; quantity = serials picked, units stay In Stock.
+    const trackedItem = state.ppeItems.find(p => p.id === ppeItemId);
+    let serialMove: ReturnType<typeof moveSerialUnits> | null = null;
+    const transferRef = `TRF-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+    if (trackedItem?.serialTracked) {
+      const ids = serialIds || [];
+      const picked = state.serialUnits.filter(u => ids.includes(u.id));
+      if (picked.some(u => u.batchNumber !== batchNumber)) {
+        return { success: false, message: 'All picked serials must belong to the selected batch.' };
+      }
+      serialMove = moveSerialUnits(state.serialUnits, state.serialEvents, {
+        ppeItemId, serialIds: ids,
+        expect: { status: 'In Stock', locationId: fromLocationId },
+        to: { status: 'In Stock', locationId: toLocationId },
+        eventTypes: ['Transfer'], userId: byId, reference: transferRef,
+      }, state.describeSerialLocation);
+      if (!serialMove.ok) return { success: false, message: serialMove.message };
+      quantity = ids.length;
+    }
 
     // Rule G6: Stock Condition Transitions
     if (fromLoc.locationType === 'Scrap' || fromLoc.stockCondition === 'Scrap') {
@@ -892,7 +1322,7 @@ export const usePPEStore = create<AppState>((set, get) => ({
     // PPE-027: Item must be linked to destination location
     const item = state.ppeItems.find(p => p.id === ppeItemId);
     if (item && !item.locationIds.includes(toLocationId)) {
-      return { success: false, message: `Item ${item.itemCode} is not linked to destination location ${toLoc.nameEn} (PPE-027).` };
+      return { success: false, message: `Item ${item.itemCode} is not linked to destination location ${toLoc.name} (PPE-027).` };
     }
 
     // Capacity Check
@@ -960,7 +1390,7 @@ export const usePPEStore = create<AppState>((set, get) => ({
       });
     }
 
-    const ref = `TRF-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+    const ref = transferRef;
     newMovements.push({
       id: generateId(),
       type: 'transfer',
@@ -968,19 +1398,26 @@ export const usePPEStore = create<AppState>((set, get) => ({
       locationId: fromLocationId,
       toLocationId,
       quantity,
-      reason: `Transfer from ${fromLoc.nameEn} to ${toLoc.nameEn}`,
+      reason: `Transfer from ${fromLoc.name} to ${toLoc.name}`,
       reference: ref,
       createdBy: byId,
       createdAt: new Date().toISOString()
     });
 
-    set({ stockBalances: newBalances, batches: newBatches, stockMovements: newMovements });
+    set({
+      stockBalances: newBalances,
+      batches: newBatches,
+      stockMovements: newMovements,
+      ...(serialMove && serialMove.ok ? { serialUnits: serialMove.serialUnits, serialEvents: serialMove.serialEvents } : {})
+    });
 
     get().recordAudit({
       action: 'STOCK_TRANSFER',
       objectType: 'Transfer',
       objectReference: ref,
-      details: `Transferred ${quantity} units from ${fromLoc.nameEn} to ${toLoc.nameEn}`,
+      details: `Transferred ${quantity} units from ${fromLoc.name} to ${toLoc.name}` +
+        (serialMove && serialMove.ok ? ` (serials: ${serialMove.moved.map(u => u.serial).join(', ')})` : ''),
+      after: serialMove && serialMove.ok ? { serials: serialMove.moved.map(u => u.serial) } : undefined,
       performedBy: byId
     });
 
@@ -992,6 +1429,8 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const state = get();
     const batch = state.batches.find(b => b.id === batchId);
     if (!batch || batch.availableQty < quantity) return;
+    // Serial units have no Quarantined status, so tracked stock cannot be quarantined.
+    if (state.ppeItems.find(p => p.id === batch.ppeItemId)?.serialTracked) return;
 
     const newAvail = batch.availableQty - quantity;
     const newQuar = (batch.quarantinedQty || 0) + quantity;
@@ -1088,7 +1527,24 @@ export const usePPEStore = create<AppState>((set, get) => ({
     // Auto-calculate expected replacement date from lifespan (Rule G5)
     const expectedReplacementDate = item ? get().calculateLifespanDate(item, new Date(issuanceData.issueDate)) : undefined;
 
-    const ref = `ISS-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+    const ref = `ISS-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}-${id.slice(0, 3).toUpperCase()}`;
+
+    // PPE-058: a tracked item is issued by serial; quantity = serials picked, units become Issued.
+    let serialMove: ReturnType<typeof moveSerialUnits> | null = null;
+    if (item?.serialTracked) {
+      const ids = issuanceData.serialIds || [];
+      serialMove = moveSerialUnits(state.serialUnits, state.serialEvents, {
+        ppeItemId: item.id, serialIds: ids,
+        expect: { status: 'In Stock', locationId: issuanceData.locationId },
+        to: { status: 'Issued', holderEmployeeId: issuanceData.employeeId, holderName: issuanceData.holderName, holderIssuanceId: id },
+        eventTypes: ['Issue'], userId: issuanceData.issuedBy, reference: ref,
+      }, state.describeSerialLocation);
+      if (!serialMove.ok) return { success: false, id: '', message: serialMove.message };
+      issuanceData = { ...issuanceData, quantity: ids.length, serialIds: ids, batchNumber: undefined };
+    } else if (issuanceData.serialIds?.length) {
+      return { success: false, id: '', message: 'Serial numbers can only be picked for a serial-tracked item.' };
+    }
+
     const newIssuance: Issuance = {
       ...issuanceData,
       id,
@@ -1099,7 +1555,9 @@ export const usePPEStore = create<AppState>((set, get) => ({
 
     // Deduct stock
     let newBalances = [...state.stockBalances];
-    let newBatches = [...state.batches];
+    let newBatches = serialMove && serialMove.ok
+      ? deductSerialBatches(state.batches, serialMove.moved, issuanceData.locationId)
+      : [...state.batches];
     let newMovements = [...state.stockMovements];
 
     if (issuanceData.ppeItemId) {
@@ -1151,14 +1609,15 @@ export const usePPEStore = create<AppState>((set, get) => ({
       issuances: updatedIssuances,
       stockBalances: newBalances,
       batches: newBatches,
-      stockMovements: newMovements
+      stockMovements: newMovements,
+      ...(serialMove && serialMove.ok ? { serialUnits: serialMove.serialUnits, serialEvents: serialMove.serialEvents } : {})
     });
 
     get().recordAudit({
       action: 'ISSUE_PPE',
       objectType: 'Issuance',
       objectReference: ref,
-      after: newIssuance,
+      after: serialMove && serialMove.ok ? { ...newIssuance, serials: serialMove.moved.map(u => u.serial) } : newIssuance,
       performedBy: issuanceData.issuedBy
     });
 
@@ -1166,25 +1625,44 @@ export const usePPEStore = create<AppState>((set, get) => ({
   },
 
   // Kit Issuance with Rule G7 (single signature pair) and G8 (partial issuance)
-  issueKit: ({ employeeId, kitId, locationId, quantity, itemVariants = {}, selectedItemIds, storeKeeperSignature, receiverSignature, issuedBy }) => {
+  issueKit: ({ employeeId, kitId, locationId, quantity, itemVariants = {}, selectedItemIds, itemSerials = {}, storeKeeperSignature, receiverSignature, issuedBy }) => {
     const state = get();
     const kit = state.kits.find(k => k.id === kitId);
-    if (!kit) return { success: false, issuanceIds: [] };
+    if (!kit) return { success: false, issuanceIds: [], message: 'Kit not found.' };
 
     const itemsToIssue = kit.items.filter(ki => !selectedItemIds || selectedItemIds.includes(ki.ppeItemId));
     const issuanceIds: string[] = [];
 
-    itemsToIssue.forEach(ki => {
+    // PPE-058: each unit of a tracked kit line needs its own serial. Check every line before issuing any.
+    for (const ki of itemsToIssue) {
       const ppeItem = state.ppeItems.find(p => p.id === ki.ppeItemId);
-      if (!ppeItem) return;
+      if (!ppeItem?.serialTracked) continue;
+      const reqQty = ki.qty * quantity;
+      const inStock = state.inStockSerials(ppeItem.id, locationId).length;
+      const expected = Math.min(reqQty, inStock);
+      const picked = itemSerials[ki.ppeItemId] || [];
+      if (expected > 0 && picked.length !== expected) {
+        return { success: false, issuanceIds: [], message: `${ppeItem.itemCode}: pick ${expected} serial number(s), one per unit (${picked.length} picked).` };
+      }
+      for (const sid of picked) {
+        const u = state.serialUnits.find(s => s.id === sid);
+        if (!u || u.ppeItemId !== ppeItem.id || u.status !== 'In Stock' || u.locationId !== locationId) {
+          return { success: false, issuanceIds: [], message: `${u?.serial || sid} is not In Stock at this location${u ? ` (${state.describeSerialLocation(u)})` : ''}.` };
+        }
+      }
+    }
+
+    for (const ki of itemsToIssue) {
+      const ppeItem = state.ppeItems.find(p => p.id === ki.ppeItemId);
+      if (!ppeItem) continue;
 
       const reqQty = ki.qty * quantity;
-      const bal = state.stockBalances.find(b => b.ppeItemId === ki.ppeItemId && b.locationId === locationId);
+      const bal = get().stockBalances.find(b => b.ppeItemId === ki.ppeItemId && b.locationId === locationId);
       const availQty = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
-      
+
       // Rule G8: Partial issuance when stock is limited
-      const issueQty = Math.min(reqQty, availQty);
-      if (issueQty <= 0) return; // Skip out-of-stock items without blocking others
+      const issueQty = ppeItem.serialTracked ? (itemSerials[ki.ppeItemId] || []).length : Math.min(reqQty, availQty);
+      if (issueQty <= 0) continue; // Skip out-of-stock items without blocking others
 
       // Find FIFO batch
       const batch = state.batches
@@ -1200,15 +1678,16 @@ export const usePPEStore = create<AppState>((set, get) => ({
         batchNumber: batch?.batchNumber,
         variantKey: itemVariants[ki.ppeItemId] || ki.variantKey,
         issueDate: new Date().toISOString(),
+        serialIds: ppeItem.serialTracked ? itemSerials[ki.ppeItemId] : undefined,
         storeKeeperSignature,
         receiverSignature,
         issuedBy
       });
 
       if (res.success) issuanceIds.push(res.id);
-    });
+    }
 
-    return { success: issuanceIds.length > 0, issuanceIds };
+    return { success: issuanceIds.length > 0, issuanceIds, message: issuanceIds.length === 0 ? 'Nothing was issued: no line had stock.' : undefined };
   },
 
   // Multi-line Loan Issuance (PPE-036, PPE-041)
@@ -1216,12 +1695,35 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const state = get();
     const loanId = generateId();
     const ref = `LN-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
-    const lineItems: LoanLineItem[] = items.map(it => ({
+
+    // PPE-058: tracked lines loan picked serials (On Loan to the borrower). All lines or nothing.
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    const movedByLine: SerialUnit[][] = [];
+    items = items.map(it => ({ ...it })); // never mutate the caller's lines
+    for (const it of items) {
+      const item = state.ppeItems.find(p => p.id === it.ppeItemId);
+      if (!item?.serialTracked) { movedByLine.push([]); continue; }
+      const res = moveSerialUnits(serialUnits, serialEvents, {
+        ppeItemId: item.id, serialIds: it.serialIds || [],
+        expect: { status: 'In Stock', locationId },
+        to: { status: 'On Loan', holderName: companyName ? `${holderName} (${companyName})` : holderName, holderIssuanceId: loanId },
+        eventTypes: ['Loan'], userId: issuedBy, reference: ref,
+      }, state.describeSerialLocation);
+      if (!res.ok) return { success: false, reference: '', message: `${item.itemCode}: ${res.message}` };
+      serialUnits = res.serialUnits;
+      serialEvents = res.serialEvents;
+      movedByLine.push(res.moved);
+      it.quantity = (it.serialIds || []).length;
+    }
+
+    const lineItems: LoanLineItem[] = items.map((it, i) => ({
       id: generateId(),
       ppeItemId: it.ppeItemId,
       quantity: it.quantity,
       returnedQty: 0,
-      status: 'open' as const
+      status: 'open' as const,
+      ...(movedByLine[i].length ? { serialIds: movedByLine[i].map(u => u.id), returnedSerialIds: [] } : {})
     }));
 
     const totalQty = items.reduce((sum, it) => sum + it.quantity, 0);
@@ -1237,9 +1739,15 @@ export const usePPEStore = create<AppState>((set, get) => ({
         newBalances[balIdx] = { ...newBalances[balIdx], quantityOnHand: Math.max(0, newBalances[balIdx].quantityOnHand - it.quantity) };
       }
 
+      // Tracked line: deduct the batch of each picked serial
+      const lineIdx = items.indexOf(it);
+      if (movedByLine[lineIdx].length > 0) {
+        newBatches = deductSerialBatches(newBatches, movedByLine[lineIdx], locationId);
+      }
+
       // Deduct from FIFO batch
-      let batchToDeduct = it.batchNumber;
-      if (!batchToDeduct) {
+      let batchToDeduct = movedByLine[lineIdx].length > 0 ? undefined : it.batchNumber;
+      if (!batchToDeduct && movedByLine[lineIdx].length === 0) {
         const foundBatch = newBatches.find(b => b.ppeItemId === it.ppeItemId && b.locationId === locationId && b.availableQty >= it.quantity && b.status === 'Active');
         batchToDeduct = foundBatch?.batchNumber;
       }
@@ -1294,7 +1802,9 @@ export const usePPEStore = create<AppState>((set, get) => ({
       issuances: [newLoanIssuance, ...state.issuances],
       stockBalances: newBalances,
       batches: newBatches,
-      stockMovements: newMovements
+      stockMovements: newMovements,
+      serialUnits,
+      serialEvents
     });
 
     get().recordAudit({
@@ -1325,6 +1835,38 @@ export const usePPEStore = create<AppState>((set, get) => ({
     const usedLoc = state.locations.find(l => l.locationType === 'Used' || l.stockCondition === 'Used') || state.locations[0];
     const scrapLoc = state.locations.find(l => l.locationType === 'Scrap' || l.stockCondition === 'Scrap') || state.locations[0];
 
+    // PPE-058: tracked lines return the exact serials the borrower holds. Validate all before changing anything.
+    let serialUnits = state.serialUnits;
+    let serialEvents = state.serialEvents;
+    const returnedSerialsByLine = new Map<string, string[]>();
+    returnedLines = returnedLines.map(r => ({ ...r }));
+    for (const ret of returnedLines) {
+      const line = updatedLines.find(l => l.id === ret.lineId);
+      const item = line && state.ppeItems.find(p => p.id === line.ppeItemId);
+      if (!line || !item?.serialTracked) continue;
+      const ids = ret.serialIds || [];
+      if (ids.length === 0) return { success: false, message: `${item.itemCode}: pick or scan the returned serial numbers.` };
+      for (const sid of ids) {
+        const u = serialUnits.find(s => s.id === sid);
+        if (!u) return { success: false, message: `Serial ${sid} does not exist.` };
+        if (!line.serialIds?.includes(sid) || line.returnedSerialIds?.includes(sid)) {
+          return { success: false, message: `${u.serial} is not held by this borrower. ${state.describeSerialLocation(u)}.` };
+        }
+      }
+      const target = serialReturnTarget(ret.condition, usedLoc.id, scrapLoc.id);
+      const res = moveSerialUnits(serialUnits, serialEvents, {
+        ppeItemId: item.id, serialIds: ids,
+        expect: { status: 'On Loan', holderIssuanceId: loanId },
+        to: target.to, eventTypes: ['Loan return', ...target.extraEvents],
+        userId: returnedBy, reference: loan.reference || loan.id, note: `Condition: ${ret.condition}`,
+      }, state.describeSerialLocation);
+      if (!res.ok) return { success: false, message: res.message };
+      serialUnits = res.serialUnits;
+      serialEvents = res.serialEvents;
+      ret.quantity = ids.length;
+      returnedSerialsByLine.set(line.id, ids);
+    }
+
     for (const ret of returnedLines) {
       const lineIdx = updatedLines.findIndex(l => l.id === ret.lineId);
       if (lineIdx === -1) continue;
@@ -1338,7 +1880,10 @@ export const usePPEStore = create<AppState>((set, get) => ({
         ...currentLine,
         returnedQty: newReturned,
         condition: ret.condition,
-        status: isLineClosed ? 'returned' : 'open'
+        status: isLineClosed ? 'returned' : 'open',
+        ...(returnedSerialsByLine.has(currentLine.id)
+          ? { returnedSerialIds: [...(currentLine.returnedSerialIds || []), ...returnedSerialsByLine.get(currentLine.id)!] }
+          : {})
       };
 
       const ppeItemId = currentLine.ppeItemId;
@@ -1423,7 +1968,9 @@ export const usePPEStore = create<AppState>((set, get) => ({
       stockBalances: newBalances,
       scrapEntries: newScraps,
       stockMovements: newMovements,
-      issuanceReturns: newReturns
+      issuanceReturns: newReturns,
+      serialUnits,
+      serialEvents
     });
 
     get().recordAudit({
@@ -1445,9 +1992,11 @@ export const usePPEStore = create<AppState>((set, get) => ({
     if (issuance.lines && issuance.lines.length > 0) {
       const line = issuance.lines.find(l => l.id === lineId);
       const remainingQty = line ? Math.max(1, line.quantity - (line.returnedQty || 0)) : 1;
+      // Whole-line return: a tracked line returns every serial still out on it.
+      const outstanding = line?.serialIds?.filter(s => !line.returnedSerialIds?.includes(s));
       get().returnLoan({
         loanId: issuanceId,
-        returnedLines: [{ lineId, quantity: remainingQty, condition }],
+        returnedLines: [{ lineId, quantity: remainingQty, condition, serialIds: outstanding }],
         returnedBy
       });
     } else {
@@ -1459,11 +2008,37 @@ export const usePPEStore = create<AppState>((set, get) => ({
   returnItem: (issuanceId, condition, physicalReceiptConfirmed, returnedBy, options) => {
     const state = get();
     const issuance = state.issuances.find(i => i.id === issuanceId);
-    if (!issuance || issuance.status === 'returned') return;
+    if (!issuance || issuance.status === 'returned') return { success: false, message: 'Issuance not found or already returned.' };
 
-    const returnQty = (options?.quantity && options.quantity > 0) ? Math.min(options.quantity, issuance.quantity) : issuance.quantity;
+    let returnQty = (options?.quantity && options.quantity > 0) ? Math.min(options.quantity, issuance.quantity) : issuance.quantity;
     const isDamagedOrWornOut = condition === 'damaged' || condition === 'worn_out';
     const autoScrapped = isDamagedOrWornOut && physicalReceiptConfirmed;
+
+    // PPE-058: a tracked item returns the exact serials the employee holds on this issuance.
+    const item = state.ppeItems.find(p => p.id === issuance.ppeItemId);
+    let serialMove: ReturnType<typeof moveSerialUnits> | null = null;
+    if (item?.serialTracked && issuance.serialIds?.length) {
+      const ids = options?.serialIds || [];
+      if (ids.length === 0) return { success: false, message: 'Pick or scan the returned serial numbers.' };
+      for (const sid of ids) {
+        const u = state.serialUnits.find(s => s.id === sid);
+        if (!u) return { success: false, message: `Serial ${sid} does not exist.` };
+        if (!issuance.serialIds.includes(sid) || issuance.returnedSerialIds?.includes(sid) || u.holderIssuanceId !== issuanceId) {
+          return { success: false, message: `${u.serial} is not held by this employee on this issuance. ${state.describeSerialLocation(u)}.` };
+        }
+      }
+      const usedLocId = (state.locations.find(l => l.locationType === 'Used' || l.stockCondition === 'Used') || state.locations[0]).id;
+      const scrapLocId = (state.locations.find(l => isScrapLocation(l)) || state.locations[0]).id;
+      const target = serialReturnTarget(condition, usedLocId, scrapLocId, physicalReceiptConfirmed);
+      serialMove = moveSerialUnits(state.serialUnits, state.serialEvents, {
+        ppeItemId: item.id, serialIds: ids,
+        expect: { status: 'Issued', holderIssuanceId: issuanceId },
+        to: target.to, eventTypes: ['Return', ...target.extraEvents],
+        userId: returnedBy, reference: issuance.reference || issuance.id, note: `Condition: ${condition}`,
+      }, state.describeSerialLocation);
+      if (!serialMove.ok) return { success: false, message: serialMove.message };
+      returnQty = ids.length;
+    }
 
     const newReturn: IssuanceReturn = {
       id: generateId(),
@@ -1522,20 +2097,26 @@ export const usePPEStore = create<AppState>((set, get) => ({
       issuances: state.issuances.map(i => i.id === issuanceId ? {
         ...i,
         quantity: remainingQty > 0 ? remainingQty : i.quantity,
-        status: isFullyReturned ? ('returned' as const) : ('partially_returned' as const)
+        status: isFullyReturned ? ('returned' as const) : ('partially_returned' as const),
+        ...(serialMove && serialMove.ok
+          ? { returnedSerialIds: [...(i.returnedSerialIds || []), ...serialMove.moved.map(u => u.id)] }
+          : {})
       } : i),
       issuanceReturns: [newReturn, ...state.issuanceReturns],
       stockBalances: newBalances,
-      scrapEntries: newScraps
+      scrapEntries: newScraps,
+      ...(serialMove && serialMove.ok ? { serialUnits: serialMove.serialUnits, serialEvents: serialMove.serialEvents } : {})
     });
 
     get().recordAudit({
       action: 'RETURN_PPE',
       objectType: 'Issuance',
       objectReference: issuance.reference || issuance.id,
-      details: `Returned ${returnQty} unit(s) with condition ${condition}. ${isFullyReturned ? 'Fully returned.' : `Remaining: ${remainingQty}`}`,
+      details: `Returned ${returnQty} unit(s) with condition ${condition}. ${isFullyReturned ? 'Fully returned.' : `Remaining: ${remainingQty}`}` +
+        (serialMove && serialMove.ok ? ` Serials: ${serialMove.moved.map(u => `${u.serial} -> ${u.status}`).join(', ')}` : ''),
       performedBy: returnedBy
     });
+    return { success: true };
   },
 
   // Scrap Reversal (PPE-039)

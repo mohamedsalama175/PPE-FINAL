@@ -4,11 +4,11 @@ import { useTranslation } from '../../i18n/useTranslation';
 import { usePPEStore } from '../../store/useStore';
 import { cn } from '../../lib/utils';
 import { ToastContainer } from '../ui/Toast';
-import { 
-  LayoutDashboard, Box, Tags, Layers, MapPin, Briefcase, 
-  PackageSearch, ClipboardList, ShieldAlert, Settings, Trash2, 
+import {
+  LayoutDashboard, Box, Tags, Layers, MapPin, Briefcase,
+  PackageSearch, ClipboardList, ShieldAlert, Settings, Trash2,
   Menu, Globe, User, LogOut, ChevronRight, ArrowRightLeft,
-  Clock, Users, Upload, Sliders, History
+  Clock, Users, Upload, Sliders, History, Ruler, ScanBarcode
 } from 'lucide-react';
 import { Role } from '../../types';
 
@@ -16,7 +16,10 @@ export function Layout() {
   const { t, language, setLanguage } = useTranslation();
   const { currentUser, employees, setCurrentUser } = usePPEStore();
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  // Phones (Store Keeper screens): the sidebar is a drawer opened from the header
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const location = useLocation();
+  React.useEffect(() => setMobileNavOpen(false), [location.pathname]);
 
   const handleRoleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const emp = employees.find(emp => emp.id === e.target.value);
@@ -34,12 +37,14 @@ export function Layout() {
       { to: '/item-groups', icon: Layers, label: t('itemGroups'), roles: ['Admin', 'HSE Supervisor'] },
       { to: '/locations', icon: MapPin, label: t('locations'), roles: ['Admin', 'HSE Supervisor'] },
       { to: '/kits', icon: Briefcase, label: t('kits'), roles: ['Admin', 'HSE Supervisor'] },
+      { to: '/units', icon: Ruler, label: t('unitsOfMeasure'), roles: ['Admin', 'HSE Supervisor'] },
     ]},
     { epic: 'Inventory & Stock', items: [
       { to: '/stock', icon: PackageSearch, label: t('stock'), roles: ['Admin', 'HSE Supervisor', 'Store Keeper'] },
       { to: '/stock/adjustments', icon: ClipboardList, label: t('adjustments'), roles: ['Admin', 'HSE Supervisor', 'Store Keeper'] },
       { to: '/stock/transfers', icon: ArrowRightLeft, label: 'Transfers', roles: ['Admin', 'HSE Supervisor', 'Store Keeper'] },
       { to: '/stock/opening-balances', icon: ClipboardList, label: 'Opening Balances', roles: ['Admin', 'HSE Supervisor', 'Store Keeper'] },
+      { to: '/serials', icon: ScanBarcode, label: t('serialNumbers'), roles: ['Admin', 'HSE Supervisor', 'Store Keeper'] },
     ]},
     { epic: 'Operations & Custody', items: [
       { to: '/issuances', icon: ShieldAlert, label: t('issuance'), roles: ['Admin', 'HSE Supervisor', 'Direct Supervisor', 'Store Keeper'] },
@@ -60,10 +65,12 @@ export function Layout() {
   return (
     <div className="flex h-screen bg-canvas overflow-hidden font-sans">
       {/* Sidebar */}
-      <aside 
+      {mobileNavOpen && <div className="fixed inset-0 bg-ink/50 z-30 md:hidden" onClick={() => setMobileNavOpen(false)} aria-hidden />}
+      <aside
         className={cn(
-          "bg-ink text-white transition-all duration-300 flex flex-col h-full",
-          sidebarCollapsed ? "w-16" : "w-60"
+          "bg-ink text-white transition-all duration-300 flex-col h-full w-60",
+          sidebarCollapsed ? "md:w-16" : "md:w-60",
+          mobileNavOpen ? "fixed inset-y-0 start-0 z-40 flex" : "hidden md:flex"
         )}
       >
         <div className="p-5 mb-2 flex items-center justify-between">
@@ -77,12 +84,12 @@ export function Layout() {
             <div className="w-6 h-6 bg-accent rounded mx-auto"></div>
           )}
         </div>
-        
+
         <nav className="flex-1 overflow-y-auto pr-1">
           {navItems.map((group, idx) => {
             const visibleItems = group.items.filter(item => item.roles.includes(currentUser.role));
             if (visibleItems.length === 0) return null;
-            
+
             return (
               <div key={idx} className="mb-3">
                 {!sidebarCollapsed && (
@@ -128,28 +135,31 @@ export function Layout() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 bg-canvas h-full">
         {/* Topbar */}
-        <header className="h-14 bg-surface border-b border-border flex items-center justify-between px-6 shrink-0">
-          <div className="flex items-center gap-4">
-            <span className="text-xs font-medium text-body capitalize">Dashboard</span>
-            <span className="text-border">/</span>
+        <header className="h-14 bg-surface border-b border-border flex items-center justify-between gap-2 px-3 md:px-6 shrink-0">
+          <div className="flex items-center gap-2 md:gap-4 min-w-0">
+            <button type="button" className="md:hidden p-2 -ms-2 text-body hover:text-ink" onClick={() => setMobileNavOpen(true)} aria-label="Menu">
+              <Menu className="w-5 h-5" />
+            </button>
+            <span className="hidden sm:inline text-xs font-medium text-body capitalize">Dashboard</span>
+            <span className="hidden sm:inline text-border">/</span>
             <span className="text-xs font-semibold capitalize">{location.pathname.split('/')[1] || t('overview')}</span>
           </div>
-          
-          <div className="flex items-center gap-6">
+
+          <div className="flex items-center gap-2 md:gap-6 min-w-0">
             <div className="flex items-center gap-2 cursor-pointer" onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')}>
-              <span className="text-[11px] font-bold text-body uppercase tracking-wider">Language</span>
+              <span className="hidden sm:inline text-[11px] font-bold text-body uppercase tracking-wider">Language</span>
               <div className="flex text-[11px] font-bold border border-border rounded overflow-hidden">
                 <div className={cn("px-2 py-1 transition-colors", language === 'en' ? "bg-surface" : "bg-[#F1F1EF] opacity-60")}>EN</div>
                 <div className={cn("border-l border-border px-2 py-1 transition-colors", language === 'ar' ? "bg-surface" : "bg-[#F1F1EF] opacity-60")}>AR</div>
               </div>
             </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-bold text-body uppercase tracking-wider">Role</span>
-              <select 
-                value={currentUser.id} 
+
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="hidden sm:inline text-[11px] font-bold text-body uppercase tracking-wider">Role</span>
+              <select
+                value={currentUser.id}
                 onChange={handleRoleChange}
-                className="bg-[#F1F1EF] border border-border rounded px-2.5 py-1 text-xs font-semibold focus:outline-none"
+                className="bg-[#F1F1EF] border border-border rounded px-2.5 py-1 text-xs font-semibold focus:outline-none max-w-[9rem] sm:max-w-none"
               >
                 {employees.map(emp => (
                   <option key={emp.id} value={emp.id}>
@@ -162,13 +172,13 @@ export function Layout() {
         </header>
 
         {/* Page Body */}
-        <main className="flex-1 overflow-auto p-6">
+        <main className="flex-1 overflow-auto p-3 md:p-6">
           <div className="max-w-6xl mx-auto h-full flex flex-col">
             <Outlet />
           </div>
         </main>
       </div>
-      
+
       <ToastContainer />
     </div>
   );

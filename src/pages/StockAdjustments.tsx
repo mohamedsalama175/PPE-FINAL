@@ -17,7 +17,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 export default function StockAdjustments() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { stockAdjustments, ppeItems, locations, currentUser, reviewAdjustment } = usePPEStore();
+  const { stockAdjustments, ppeItems, locations, currentUser, reviewAdjustment, getUnitSymbol } = usePPEStore();
   const addToast = useToastStore(s => s.addToast);
   const [searchParams] = useSearchParams();
   const initialFilter = searchParams.get('filter');
@@ -77,16 +77,16 @@ export default function StockAdjustments() {
           )},
           { key: 'item', header: 'Item', render: (a) => {
             const item = ppeItems.find(i => i.id === a.ppeItemId);
-            return item ? (language === 'en' ? item.nameEn : item.nameAr) : a.ppeItemId;
+            return item ? item.name : a.ppeItemId;
           }},
           { key: 'location', header: 'Location', render: (a) => {
             const loc = locations.find(l => l.id === a.locationId);
-            return loc ? (language === 'en' ? loc.nameEn : loc.nameAr) : a.locationId;
+            return loc ? loc.name : a.locationId;
           }},
           { key: 'batch', header: 'Batch', render: (a) => a.batchNumber },
           { key: 'qty', header: 'Delta', render: (a) => (
             <span className={a.quantityDelta > 0 ? 'text-safety-green font-medium' : 'text-safety-red font-medium'}>
-              {a.quantityDelta > 0 ? '+' : ''}{a.quantityDelta}
+              {a.quantityDelta > 0 ? '+' : ''}{a.quantityDelta} {getUnitSymbol(a.ppeItemId)}
             </span>
           )},
           { key: 'reason', header: 'Reason', render: (a) => (

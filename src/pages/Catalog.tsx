@@ -14,21 +14,27 @@ import { ItemDetailModal } from '../components/modals/ItemDetailModal';
 import { OverrideModal } from '../components/ui/OverrideModal';
 import { useToastStore } from '../store/toastStore';
 import { downloadCsv } from '../lib/excelService';
-import { Box, Plus, Download, AlertTriangle, Eye, ShieldAlert } from 'lucide-react';
+import { Box, Plus, Download, Upload, AlertTriangle, Eye, ShieldAlert, ScanBarcode } from 'lucide-react';
+import { CatalogImportModal } from '../components/modals/CatalogImportModal';
+import { CATALOG_COLUMNS, exportCatalogRows } from '../lib/catalogIO';
 import { PPEItem } from '../types';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export default function Catalog() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { ppeItems, itemGroups, stockBalances, softDeleteEntity, toggleEntityActive, checkInUse } = usePPEStore();
+  const store = usePPEStore();
+  const { ppeItems, itemGroups, stockBalances, units, softDeleteEntity, toggleEntityActive, checkInUse } = store;
+  const [params, setParams] = useSearchParams();
+  const unitFilter = params.get('unit') || '';
+  const [importOpen, setImportOpen] = React.useState(false);
   const addToast = useToastStore(s => s.addToast);
 
   const [search, setSearch] = React.useState('');
   const [categoryFilter, setCategoryFilter] = React.useState('');
   const [groupFilter, setGroupFilter] = React.useState('');
   const [riskFilter, setRiskFilter] = React.useState('');
-  const [activeFilter, setActiveFilter] = React.useState<'all' | 'active' | 'inactive'>('active');
+  const [activeFilter, setActiveFilter] = React.useState<'all' | 'active' | 'inactive'>(params.get('unit') ? 'all' : 'active');
   const [selectedItem, setSelectedItem] = React.useState<PPEItem | null>(null);
 
   // In-use protection override state
@@ -37,16 +43,22 @@ export default function Catalog() {
   const filteredItems = React.useMemo(() => {
     return ppeItems.filter(item => {
       const matchSearch = item.itemCode.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameEn.toLowerCase().includes(search.toLowerCase()) || 
-                          item.nameAr.includes(search);
+                          item.name.toLowerCase().includes(search.toLowerCase());
       const matchCategory = !categoryFilter || item.category === categoryFilter;
       const matchGroup = !groupFilter || item.itemGroupId === groupFilter;
       const matchRisk = !riskFilter || item.riskCategory === riskFilter;
+      const matchUnit = !unitFilter || item.unitId === unitFilter;
       const matchActive = activeFilter === 'all' ? true : activeFilter === 'active' ? item.active : !item.active;
       const isNotDeleted = !item.deletedAt;
-      return matchSearch && matchCategory && matchGroup && matchRisk && matchActive && isNotDeleted;
+      return matchSearch && matchCategory && matchGroup && matchRisk && matchUnit && matchActive && isNotDeleted;
     });
-  }, [ppeItems, search, categoryFilter, groupFilter, riskFilter, activeFilter]);
+  }, [ppeItems, search, categoryFilter, groupFilter, riskFilter, unitFilter, activeFilter]);
+
+  // Deep link from other screens: /catalog?item=<id> opens the item details (PPE-006)
+  React.useEffect(() => {
+    const itemId = params.get('item');
+    if (itemId) setSelectedItem(ppeItems.find(p => p.id === itemId) || null);
+  }, [params, ppeItems]);
 
   const handleToggleActive = (item: PPEItem) => {
     if (item.active) {
@@ -96,20 +108,8 @@ export default function Catalog() {
       addToast('No items to export.', 'error');
       return;
     }
-    const headers = ['Item Code', 'Name (EN)', 'Name (AR)', 'Category', 'Risk Category', 'Lifespan Value', 'Lifespan Type', 'UoM', 'Reorder Level', 'Active'];
-    const rows = filteredItems.map(item => [
-      item.itemCode,
-      item.nameEn,
-      item.nameAr,
-      item.category,
-      `Category ${item.riskCategory}`,
-      item.lifespanValue,
-      item.lifespanType,
-      item.uom || 'Piece',
-      item.reorderLevel,
-      item.active ? 'Yes' : 'No'
-    ]);
-    downloadCsv('ppe_catalog_master', headers, rows);
+    // PPE-007: every catalog field, English names only, unit by Code
+    downloadCsv('ppe_catalog_master', [...CATALOG_COLUMNS], exportCatalogRows(store, filteredItems));
     addToast('Catalog exported to CSV successfully.', 'success');
   };
 
@@ -122,6 +122,9 @@ export default function Catalog() {
           <div className="flex gap-2">
             <Button variant="secondary" onClick={handleExport}>
               <Download className="w-4 h-4 mr-2" /> Export Catalog
+            </Button>
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              <Upload className="w-4 h-4 mr-2" /> Import
             </Button>
             <Button onClick={() => navigate('/catalog/new')}>
               <Plus className="w-4 h-4 mr-2" /> Add Item
@@ -150,7 +153,7 @@ export default function Catalog() {
         <Select value={groupFilter} onChange={e => setGroupFilter(e.target.value)} className="w-40">
           <option value="">All Groups</option>
           {itemGroups.filter(g => g.active && !g.deletedAt).map(g => (
-            <option key={g.id} value={g.id}>{g.nameEn}</option>
+            <option key={g.id} value={g.id}>{g.name}</option>
           ))}
         </Select>
         <Select value={riskFilter} onChange={e => setRiskFilter(e.target.value)} className="w-32">
@@ -158,6 +161,10 @@ export default function Catalog() {
           <option value="I">Category I</option>
           <option value="II">Category II</option>
           <option value="III">Category III</option>
+        </Select>
+        <Select value={unitFilter} onChange={e => { const p = new URLSearchParams(params); if (e.target.value) p.set('unit', e.target.value); else p.delete('unit'); setParams(p); }} className="w-36" aria-label={t('unitOfMeasure')}>
+          <option value="">All Units</option>
+          {units.filter(u => !u.deletedAt).map(u => <option key={u.id} value={u.id}>{u.code}</option>)}
         </Select>
         <div className="flex bg-surface border border-border rounded-md p-1">
           <button 
@@ -194,14 +201,17 @@ export default function Catalog() {
                 onClick={() => setSelectedItem(item)}
                 className="font-medium text-ink cursor-pointer hover:underline"
               >
-                {language === 'en' ? item.nameEn : item.nameAr}
+                {item.name}
               </div>
-              <div className="text-[11px] text-body">{item.manufacturer} {item.model ? `· ${item.model}` : ''}</div>
+              <div className="text-[11px] text-body flex items-center gap-1.5">
+                {item.manufacturer} {item.model ? `· ${item.model}` : ''}
+                {item.serialTracked && <span className="inline-flex items-center gap-0.5 text-accent font-semibold" title={t('serialTracked')}><ScanBarcode className="w-3 h-3" /> SN</span>}
+              </div>
             </div>
           )},
           { key: 'group', header: 'Group', render: (item) => {
             const group = itemGroups.find(g => g.id === item.itemGroupId);
-            return group ? (language === 'en' ? group.nameEn : group.nameAr) : '-';
+            return group ? group.name : '-';
           }},
           { key: 'riskCategory', header: 'Risk', render: (item) => (
             <StatusBadge 
@@ -245,10 +255,12 @@ export default function Catalog() {
         ]}
       />
 
+      <CatalogImportModal open={importOpen} onClose={() => setImportOpen(false)} />
+
       {/* PPE-005 Item Details Modal */}
       <ItemDetailModal 
         item={selectedItem} 
-        onClose={() => setSelectedItem(null)} 
+        onClose={() => { setSelectedItem(null); if (params.get('item')) { const p = new URLSearchParams(params); p.delete('item'); setParams(p); } }} 
         onEdit={(it) => {
           setSelectedItem(null);
           navigate(`/catalog/${it.id}/edit`);

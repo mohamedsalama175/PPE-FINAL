@@ -21,8 +21,7 @@ export default function ItemGroupForm() {
   const isEdit = Boolean(id);
   const [formData, setFormData] = React.useState<Partial<ItemGroup>>({
     code: '',
-    nameEn: '',
-    nameAr: '',
+    name: '',
     attributeIds: [],
     requiresGenderMatch: false,
     active: true
@@ -42,7 +41,7 @@ export default function ItemGroupForm() {
 
   // Find GENDER attribute ID
   const genderAttr = React.useMemo(() => {
-    return attributes.find(a => a.code.toUpperCase() === 'GENDER' || a.nameEn.toLowerCase().includes('gender'));
+    return attributes.find(a => a.code.toUpperCase() === 'GENDER' || a.name.toLowerCase().includes('gender'));
   }, [attributes]);
 
   const toggleAttribute = (attrId: string) => {
@@ -109,8 +108,8 @@ export default function ItemGroupForm() {
     e.preventDefault();
 
     const code = (formData.code || '').trim().toUpperCase();
-    if (!code || !formData.nameEn?.trim()) {
-      addToast('Group Code and Name (EN) are required.', 'error');
+    if (!code || !formData.name?.trim()) {
+      addToast('Group Code and Name are required.', 'error');
       return;
     }
 
@@ -176,20 +175,12 @@ export default function ItemGroupForm() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormGroup label="Name (English)">
+            <FormGroup label="Name">
               <Input 
-                value={formData.nameEn} 
-                onChange={e => setFormData({...formData, nameEn: e.target.value})} 
+                value={formData.name} 
+                onChange={e => setFormData({...formData, name: e.target.value})} 
                 placeholder="e.g. Gloves"
                 required 
-              />
-            </FormGroup>
-            <FormGroup label="Name (Arabic)">
-              <Input 
-                value={formData.nameAr} 
-                onChange={e => setFormData({...formData, nameAr: e.target.value})} 
-                dir="rtl" 
-                placeholder="مثال: قفازات"
               />
             </FormGroup>
           </div>
@@ -243,7 +234,7 @@ export default function ItemGroupForm() {
                   />
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-bold text-ink">{attr.nameEn}</span>
+                      <span className="text-sm font-bold text-ink">{attr.name}</span>
                       {isRequiredGender && (
                         <span className="text-[10px] font-bold text-safety-amber-signal uppercase">Required</span>
                       )}

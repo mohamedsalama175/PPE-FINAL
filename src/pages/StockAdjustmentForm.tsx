@@ -9,10 +9,17 @@ import { Button } from '../components/ui/Button';
 import { useToastStore } from '../store/toastStore';
 import { StockAdjustment } from '../types';
 import { AlertTriangle, Info, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { SerialEntryBox } from '../components/serials/SerialEntryBox';
+import { SerialPicker } from '../components/serials/SerialPicker';
+import { useTranslation } from '../i18n/useTranslation';
 
 export default function StockAdjustmentForm() {
   const navigate = useNavigate();
-  const { ppeItems, locations, batches, stockBalances, currentUser, adjustStock } = usePPEStore();
+  const { t } = useTranslation();
+  const { ppeItems, locations, batches, stockBalances, currentUser, adjustStock, units, validateNewSerials } = usePPEStore();
+  // PPE-057 / PPE-058: serials replace the quantity for a tracked item
+  const [serialNumbers, setSerialNumbers] = React.useState<string[]>([]);
+  const [serialIds, setSerialIds] = React.useState<string[]>([]);
   
   const isStoreKeeper = currentUser.role === 'Store Keeper';
   const myLocations = React.useMemo(() => {
@@ -54,6 +61,8 @@ export default function StockAdjustmentForm() {
       destinationLocationId: '',
       quantityDelta: 1
     }));
+    setSerialNumbers([]);
+    setSerialIds([]);
   }, [type]);
 
   const selectedItem = React.useMemo(() => {
@@ -104,15 +113,37 @@ export default function StockAdjustmentForm() {
   };
 
   const isCat3 = selectedItem?.riskCategory === 'III';
+  const tracked = !!selectedItem?.serialTracked;
+  const unitSymbol = units.find(u => u.id === selectedItem?.unitId)?.symbol || '';
+  const qty = tracked ? (type === 'IN' ? serialNumbers.length : serialIds.length) : (Number(formData.quantityDelta) || 0);
+
+  // reset serials when the item, location or batch changes
+  React.useEffect(() => { setSerialNumbers([]); setSerialIds([]); }, [formData.ppeItemId, formData.locationId]);
+  React.useEffect(() => { setSerialIds([]); }, [formData.batchNumber]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.ppeItemId || !formData.locationId || !formData.quantityDelta || !formData.batchNumber || !formData.reasonCategory) {
+    if (tracked) {
+      if (type === 'IN') {
+        const errs = validateNewSerials(formData.ppeItemId!, serialNumbers);
+        if (serialNumbers.length === 0) { addToast(`${selectedItem!.itemCode} is serial tracked: enter one serial number per unit.`, 'error'); return; }
+        if (errs.length > 0) { addToast(errs[0].message, 'error'); return; }
+      } else if (serialIds.length === 0) {
+        addToast('Pick the serial numbers leaving stock.', 'error');
+        return;
+      }
+      if (type === 'OUT' && formData.reasonCategory === 'Quarantined') {
+        addToast('Quarantine is not available for a serial-tracked item.', 'error');
+        return;
+      }
+    }
+    const quantityDelta = tracked ? qty : formData.quantityDelta;
+    if (!formData.ppeItemId || !formData.locationId || !quantityDelta || !formData.batchNumber || !formData.reasonCategory) {
       addToast('Please fill all required fields.', 'error');
       return;
     }
 
-    if (formData.quantityDelta <= 0) {
+    if (quantityDelta <= 0) {
       addToast('Quantity must be greater than zero.', 'error');
       return;
     }
@@ -142,7 +173,7 @@ export default function StockAdjustmentForm() {
          addToast('Invalid batch selected.', 'error');
          return;
       }
-      if (formData.quantityDelta > selectedBatch.availableQty) {
+      if (quantityDelta > selectedBatch.availableQty) {
         addToast(`Quantity cannot exceed available stock (${selectedBatch.availableQty}).`, 'error');
         return;
       }
@@ -152,16 +183,21 @@ export default function StockAdjustmentForm() {
     const timestamp = Date.now().toString().slice(-5);
     const reference = `ADJ-${type}-${new Date().getFullYear()}-${timestamp}`;
 
-    const delta = type === 'IN' ? formData.quantityDelta : -formData.quantityDelta;
+    const delta = type === 'IN' ? quantityDelta : -quantityDelta;
     const status = isCat3 ? 'pending' : 'applied'; // Category III stock adjustments need approval (PPE-025, PPE-026)
 
-    adjustStock({
+    const res = adjustStock({
       ...formData,
       reference,
       quantityDelta: delta,
       status,
-      submittedBy: currentUser.id
+      submittedBy: currentUser.id,
+      ...(tracked ? (type === 'IN' ? { serialNumbers } : { serialIds }) : {})
     } as StockAdjustment);
+    if (!res.success) {
+      addToast(res.message || 'Could not save the adjustment.', 'error');
+      return; // keep the form as entered
+    }
     
     if (status === 'pending') {
       addToast(`Category III stock adjustment submitted for HSE Supervisor approval (${reference}).`, 'info');
@@ -219,7 +255,7 @@ export default function StockAdjustmentForm() {
 
       <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg p-6 space-y-6 shadow-sm">
         <FormSection title={type === 'IN' ? 'Receipt & Warehouse Parameters' : 'Deduction & Source Parameters'}>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="Location *">
               <Select 
                 value={formData.locationId} 
@@ -229,7 +265,7 @@ export default function StockAdjustmentForm() {
                 <option value="">Select Location...</option>
                 {myLocations.filter(l => type === 'OUT' || l.stockCondition !== 'Scrap').map(l => (
                   <option key={l.id} value={l.id}>
-                    {l.code} - {l.nameEn} ({l.stockCondition})
+                    {l.code} - {l.name} ({l.stockCondition})
                   </option>
                 ))}
               </Select>
@@ -244,7 +280,7 @@ export default function StockAdjustmentForm() {
                 <option value="">Select Linked Item...</option>
                 {availableItems.map(p => (
                   <option key={p.id} value={p.id}>
-                    {p.itemCode} - {p.nameEn} (Cat {p.riskCategory})
+                    {p.itemCode} - {p.name} (Cat {p.riskCategory})
                   </option>
                 ))}
               </Select>
@@ -253,7 +289,7 @@ export default function StockAdjustmentForm() {
 
           {/* Variant Selection if item has variants */}
           {selectedItem?.variantAttributeValueIds && selectedItem.variantAttributeValueIds.length > 0 && (
-            <div className="grid grid-cols-2 gap-4 mt-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
               <FormGroup label="Variant / Attribute Value *">
                 <Select
                   value={formData.variantKey || ''}
@@ -269,7 +305,7 @@ export default function StockAdjustmentForm() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
             {type === 'IN' ? (
               <FormGroup label="Batch Number *">
                 <div className="space-y-1.5">
@@ -315,7 +351,13 @@ export default function StockAdjustmentForm() {
               </FormGroup>
             )}
 
-            <FormGroup label={type === 'IN' ? 'Quantity to Add *' : 'Quantity to Deduct *'}>
+            {tracked ? (
+              <FormGroup label={`${t('quantity')}`}>
+                <div className="input-base bg-canvas font-semibold" aria-live="polite">{qty} {unitSymbol}</div>
+                <p className="text-[11px] text-body mt-1">= {type === 'IN' ? t('serialsEntered') : t('serialsPicked')}</p>
+              </FormGroup>
+            ) : (
+            <FormGroup label={type === 'IN' ? `Quantity to Add (${unitSymbol || '-'}) *` : `Quantity to Deduct (${unitSymbol || '-'}) *`}>
               <Input 
                 type="number" 
                 min="1" 
@@ -324,11 +366,26 @@ export default function StockAdjustmentForm() {
                 required 
               />
             </FormGroup>
+            )}
           </div>
+
+          {/* PPE-057: serial entry on Stock IN / PPE-058: serial pick on Stock OUT */}
+          {tracked && type === 'IN' && formData.ppeItemId && (
+            <div className="mt-4">
+              <FormGroup label={`${t('serialNumbers')} *`} htmlFor="serial-entry">
+                <SerialEntryBox id="serial-entry" ppeItemId={formData.ppeItemId} value={serialNumbers} onChange={setSerialNumbers} />
+              </FormGroup>
+            </div>
+          )}
+          {tracked && type === 'OUT' && formData.ppeItemId && formData.batchNumber && (
+            <div className="mt-4">
+              <SerialPicker ppeItemId={formData.ppeItemId} locationId={formData.locationId} batchNumber={formData.batchNumber} value={serialIds} onChange={setSerialIds} />
+            </div>
+          )}
 
           {/* PPE-025: Optional Manufacturer Expiry Date & Supplier Delivery Note */}
           {type === 'IN' && (
-            <div className="grid grid-cols-2 gap-4 mt-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
               <FormGroup label="Manufacturer Expiry Date (Optional)">
                 <Input 
                   type="date"
@@ -358,7 +415,7 @@ export default function StockAdjustmentForm() {
                 >
                   <option value="">Deduct Without Moving to Scrap</option>
                   {scrapLocations.map(sl => (
-                    <option key={sl.id} value={sl.id}>{sl.code} - {sl.nameEn} (Scrap)</option>
+                    <option key={sl.id} value={sl.id}>{sl.code} - {sl.name} (Scrap)</option>
                   ))}
                 </Select>
                 <p className="text-[11px] text-body mt-1">
@@ -378,7 +435,7 @@ export default function StockAdjustmentForm() {
         </FormSection>
 
         <FormSection title="Reason & Audit Documentation">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="Reason Category *">
               <Select 
                 value={formData.reasonCategory} 
@@ -398,7 +455,7 @@ export default function StockAdjustmentForm() {
                     <option value="Damaged in Store">Damaged in Store</option>
                     <option value="Written Off">Written Off</option>
                     <option value="Expired">Expired</option>
-                    <option value="Quarantined">Quarantined</option>
+                    {!tracked && <option value="Quarantined">Quarantined</option>}
                     <option value="Stolen">Stolen</option>
                     <option value="Other">Other</option>
                   </>

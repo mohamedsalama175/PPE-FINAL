@@ -8,13 +8,16 @@ import { Select } from '../components/ui/Select';
 import { Button } from '../components/ui/Button';
 import { useToastStore } from '../store/toastStore';
 import { AlertTriangle, Info, ArrowRight } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function TransferForm() {
   const navigate = useNavigate();
-  const { ppeItems, locations, batches, stockBalances, currentUser, transferStock } = usePPEStore();
-  
+  const { ppeItems, locations, batches, stockBalances, currentUser, transferStock, units } = usePPEStore();
+  // PPE-058: a tracked item transfers picked serials
+  const [serialIds, setSerialIds] = React.useState<string[]>([]);
+
   const isStoreKeeper = currentUser.role === 'Store Keeper';
-  
+
   // From Location: Assigned to user, active, not Scrap (Rule G6 & PPE-027)
   const sourceLocations = React.useMemo(() => {
     return locations.filter(l => {
@@ -98,13 +101,22 @@ export default function TransferForm() {
     }
   };
 
+  const tracked = !!selectedItem?.serialTracked;
+  const unitSymbol = units.find(u => u.id === selectedItem?.unitId)?.symbol || '';
+  const quantity = tracked ? serialIds.length : formData.quantity;
+  React.useEffect(() => { setSerialIds([]); }, [formData.ppeItemId, formData.fromLocationId, formData.batchNumber]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.ppeItemId || !formData.fromLocationId || !formData.toLocationId || !formData.quantity || !formData.batchNumber) {
+    if (tracked && serialIds.length === 0) {
+      addToast('Pick the serial numbers to transfer.', 'error');
+      return;
+    }
+    if (!formData.ppeItemId || !formData.fromLocationId || !formData.toLocationId || !quantity || !formData.batchNumber) {
       addToast('Please fill all required fields.', 'error');
       return;
     }
-    
+
     if (formData.fromLocationId === formData.toLocationId) {
       addToast('Source and destination locations must be different.', 'error');
       return;
@@ -116,37 +128,38 @@ export default function TransferForm() {
     }
 
     if (!isItemLinkedToDestination) {
-      addToast(`Item ${selectedItem?.itemCode} is not linked to destination warehouse ${toLoc?.nameEn}. Add it to the item's locations first (PPE-027).`, 'error');
+      addToast(`Item ${selectedItem?.itemCode} is not linked to destination warehouse ${toLoc?.name}. Add it to the item's locations first (PPE-027).`, 'error');
       return;
     }
 
-    if (!selectedBatch || selectedBatch.availableQty < formData.quantity) {
+    if (!selectedBatch || selectedBatch.availableQty < quantity) {
       addToast(`Not enough quantity available in the selected batch (Available: ${selectedBatch?.availableQty || 0}).`, 'error');
       return;
     }
 
     const res = transferStock(
-      formData.ppeItemId, 
-      formData.fromLocationId, 
-      formData.toLocationId, 
+      formData.ppeItemId,
+      formData.fromLocationId,
+      formData.toLocationId,
       formData.batchNumber,
-      formData.quantity, 
-      currentUser.id
+      quantity,
+      currentUser.id,
+      tracked ? serialIds : undefined
     );
-    
+
     if (!res.success) {
       addToast(res.message || 'Transfer failed.', 'error');
       return;
     }
-    
+
     addToast('Stock transferred successfully between warehouses (PPE-027).', 'success');
     navigate('/stock/transfers');
   };
 
   return (
     <div className="max-w-3xl space-y-6 pb-20">
-      <PageHeader 
-        title="Transfer Stock Between Locations (PPE-027)" 
+      <PageHeader
+        title="Transfer Stock Between Locations (PPE-027)"
         subtitle="Atomic stock movement between warehouses enforcing Rule G6 stock condition transitions"
         onBack={() => navigate('/stock/transfers')}
       />
@@ -164,11 +177,11 @@ export default function TransferForm() {
         <div className="p-3 bg-red-50 border border-red-200 text-safety-red rounded flex items-center justify-between text-xs font-semibold">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>Item is not linked to destination warehouse {toLoc?.nameEn} (PPE-027).</span>
+            <span>Item is not linked to destination warehouse {toLoc?.name} (PPE-027).</span>
           </div>
-          <button 
-            type="button" 
-            onClick={() => navigate(`/catalog/${selectedItem?.id}`)} 
+          <button
+            type="button"
+            onClick={() => navigate(`/catalog/${selectedItem?.id}`)}
             className="underline font-bold text-accent cursor-pointer"
           >
             Edit Item Locations
@@ -180,38 +193,38 @@ export default function TransferForm() {
       {isDestinationOverCapacity && (
         <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded flex items-center gap-2 text-xs font-semibold">
           <Info className="w-4 h-4 shrink-0 text-amber-700" />
-          <span>Non-blocking capacity warning: Transfer will exceed storage capacity at {toLoc?.nameEn}.</span>
+          <span>Non-blocking capacity warning: Transfer will exceed storage capacity at {toLoc?.name}.</span>
         </div>
       )}
 
       <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg p-6 space-y-6 shadow-sm">
         <FormSection title="Source & Destination Warehouses">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="From Location (Source) *">
-              <Select 
-                value={formData.fromLocationId} 
-                onChange={e => setFormData({...formData, fromLocationId: e.target.value, ppeItemId: '', batchNumber: ''})} 
+              <Select
+                value={formData.fromLocationId}
+                onChange={e => setFormData({...formData, fromLocationId: e.target.value, ppeItemId: '', batchNumber: ''})}
                 required
               >
                 <option value="">Select Source Location...</option>
                 {sourceLocations.map(l => (
                   <option key={l.id} value={l.id}>
-                    {l.code} - {l.nameEn} ({l.stockCondition})
+                    {l.code} - {l.name} ({l.stockCondition})
                   </option>
                 ))}
               </Select>
             </FormGroup>
-            
+
             <FormGroup label="To Location (Destination) *">
-              <Select 
-                value={formData.toLocationId} 
-                onChange={e => setFormData({...formData, toLocationId: e.target.value})} 
+              <Select
+                value={formData.toLocationId}
+                onChange={e => setFormData({...formData, toLocationId: e.target.value})}
                 required
               >
                 <option value="">Select Destination Location...</option>
                 {validDestinationLocations.map(l => (
                   <option key={l.id} value={l.id}>
-                    {l.code} - {l.nameEn} ({l.stockCondition})
+                    {l.code} - {l.name} ({l.stockCondition})
                   </option>
                 ))}
               </Select>
@@ -220,32 +233,32 @@ export default function TransferForm() {
         </FormSection>
 
         <FormSection title="Equipment & Batch Selection">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="PPE Item *">
-              <Select 
-                value={formData.ppeItemId} 
-                onChange={e => setFormData({...formData, ppeItemId: e.target.value, batchNumber: ''})} 
+              <Select
+                value={formData.ppeItemId}
+                onChange={e => setFormData({...formData, ppeItemId: e.target.value, batchNumber: ''})}
                 required
               >
                 <option value="">Select Item...</option>
                 {ppeItems.filter(p => p.active && !p.deletedAt && p.locationIds.includes(formData.fromLocationId)).map(p => (
                   <option key={p.id} value={p.id}>
-                    {p.itemCode} - {p.nameEn}
+                    {p.itemCode} - {p.name}
                   </option>
                 ))}
               </Select>
             </FormGroup>
 
             <FormGroup label="Available Batch *">
-              <Select 
-                value={availableBatches.find(b => b.batchNumber === formData.batchNumber)?.id || ''} 
-                onChange={e => handleBatchSelect(e.target.value)} 
+              <Select
+                value={availableBatches.find(b => b.batchNumber === formData.batchNumber)?.id || ''}
+                onChange={e => handleBatchSelect(e.target.value)}
                 required
               >
                 <option value="">Select Batch...</option>
                 {availableBatches.map(b => (
                   <option key={b.id} value={b.id}>
-                    {b.batchNumber} (Available: {b.availableQty})
+                    {b.batchNumber} (Available: {b.availableQty} {unitSymbol})
                   </option>
                 ))}
               </Select>
@@ -255,24 +268,33 @@ export default function TransferForm() {
             </FormGroup>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 mt-4">
-            <FormGroup label="Transfer Quantity *">
-              <Input 
-                type="number" 
-                min="1" 
+          {tracked ? (
+            formData.batchNumber && (
+              <div className="mt-4 space-y-2">
+                <SerialPicker ppeItemId={formData.ppeItemId} locationId={formData.fromLocationId} batchNumber={formData.batchNumber} value={serialIds} onChange={setSerialIds} />
+                <p className="text-xs text-body">Transfer Quantity: <strong className="text-ink">{serialIds.length} {unitSymbol}</strong> (= serials picked)</p>
+              </div>
+            )
+          ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <FormGroup label={`Transfer Quantity (${unitSymbol || '-'}) *`}>
+              <Input
+                type="number"
+                min="1"
                 max={selectedBatch?.availableQty || 9999}
-                value={formData.quantity} 
-                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})} 
-                required 
+                value={formData.quantity}
+                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})}
+                required
               />
             </FormGroup>
           </div>
+          )}
         </FormSection>
-        
+
         <div className="pt-4 flex justify-end gap-3 border-t border-border">
           <Button type="button" variant="ghost" onClick={() => navigate('/stock/transfers')}>Cancel</Button>
-          <Button 
-            type="submit" 
+          <Button
+            type="submit"
             disabled={Boolean(conditionViolation) || !isItemLinkedToDestination || !formData.batchNumber}
           >
             Complete Transfer <ArrowRight className="w-4 h-4 ml-1.5" />

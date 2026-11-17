@@ -30,7 +30,7 @@ export function ItemGroupDetailModal({ itemGroup, onClose, onEdit }: ItemGroupDe
               {itemGroup.code}
             </span>
             <h3 className="font-bold text-ink text-sm">
-              {language === 'en' ? itemGroup.nameEn : itemGroup.nameAr}
+              {itemGroup.name}
             </h3>
             <StatusBadge status={itemGroup.active ? 'success' : 'neutral'} label={itemGroup.active ? 'Active' : 'Inactive'} />
           </div>
@@ -69,7 +69,7 @@ export function ItemGroupDetailModal({ itemGroup, onClose, onEdit }: ItemGroupDe
               <div className="grid grid-cols-2 gap-2">
                 {linkedAttributes.map(attr => (
                   <div key={attr.id} className="p-2.5 rounded bg-canvas border border-border text-xs">
-                    <div className="font-bold text-ink">{language === 'en' ? attr.nameEn : attr.nameAr}</div>
+                    <div className="font-bold text-ink">{attr.name}</div>
                     <div className="text-[11px] text-body mt-1">
                       Values: {attr.values.map(v => v.value).join(', ')}
                     </div>
@@ -102,7 +102,7 @@ export function ItemGroupDetailModal({ itemGroup, onClose, onEdit }: ItemGroupDe
                     {childItems.map(item => (
                       <tr key={item.id} className="hover:bg-canvas/50">
                         <td className="p-2 font-mono font-bold text-ink">{item.itemCode}</td>
-                        <td className="p-2 font-medium">{language === 'en' ? item.nameEn : item.nameAr}</td>
+                        <td className="p-2 font-medium">{item.name}</td>
                         <td className="p-2">Cat {item.riskCategory}</td>
                         <td className="p-2 text-right">
                           <StatusBadge status={item.active ? 'success' : 'neutral'} label={item.active ? 'Active' : 'Inactive'} />

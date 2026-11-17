@@ -14,7 +14,7 @@ interface LocationDetailModalProps {
 
 export function LocationDetailModal({ location, onClose, onEdit }: LocationDetailModalProps) {
   const { language } = useTranslation();
-  const { employees, stockBalances, ppeItems } = usePPEStore();
+  const { employees, stockBalances, ppeItems, getUnitSymbol } = usePPEStore();
 
   if (!location) return null;
 
@@ -50,7 +50,7 @@ export function LocationDetailModal({ location, onClose, onEdit }: LocationDetai
               {location.code}
             </span>
             <h3 className="font-bold text-ink text-sm">
-              {language === 'en' ? location.nameEn : location.nameAr}
+              {location.name}
             </h3>
             <StatusBadge status={location.active ? 'success' : 'neutral'} label={location.active ? 'Active' : 'Inactive'} />
           </div>
@@ -171,7 +171,7 @@ export function LocationDetailModal({ location, onClose, onEdit }: LocationDetai
                   <tbody className="divide-y divide-border">
                     {locationBalances.map(({ bal, item }) => (
                       <tr key={bal.id} className="hover:bg-canvas/50">
-                        <td className="p-2 font-medium text-ink">{item ? (language === 'en' ? item.nameEn : item.nameAr) : bal.ppeItemId}</td>
+                        <td className="p-2 font-medium text-ink">{item ? item.name : bal.ppeItemId}</td>
                         <td className="p-2 font-mono text-body">{item?.itemCode || '-'}</td>
                         <td className="p-2 text-right font-bold text-safety-green">
                           {Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0))}
@@ -180,7 +180,7 @@ export function LocationDetailModal({ location, onClose, onEdit }: LocationDetai
                           {bal.quarantinedOnHand || 0}
                         </td>
                         <td className="p-2 text-right font-bold text-ink">
-                          {bal.quantityOnHand}
+                          {bal.quantityOnHand} {getUnitSymbol(bal.ppeItemId)}
                         </td>
                       </tr>
                     ))}

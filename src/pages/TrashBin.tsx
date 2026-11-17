@@ -7,6 +7,9 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { useToastStore } from '../store/toastStore';
 import { Trash2, RotateCcw, AlertOctagon, ShieldCheck, Clock } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';
+import { Select } from '../components/ui/Select';
+import { Input } from '../components/ui/Input';
+import { TrashableCollection } from '../store/useStore';
 
 export default function TrashBin() {
   const store = usePPEStore();
@@ -15,22 +18,24 @@ export default function TrashBin() {
 
   // Aggregate all soft-deleted entities
   const deletedEntities = React.useMemo(() => {
-    const arr: { 
-      type: string; 
-      storeKey: 'ppeItems' | 'attributes' | 'itemGroups' | 'locations' | 'kits'; 
-      id: string; 
-      name: string; 
+    const arr: {
+      type: string;
+      storeKey: TrashableCollection;
+      id: string;
+      name: string;
+      label: string;
       deletedAt: string;
       daysRemaining: number;
       hasHistory: boolean;
     }[] = [];
-    
+
     const types = [
       { key: 'ppeItems' as const, label: 'PPE Item', nameField: 'itemCode' },
       { key: 'attributes' as const, label: 'Attribute', nameField: 'code' },
       { key: 'itemGroups' as const, label: 'Item Group', nameField: 'code' },
       { key: 'locations' as const, label: 'Location', nameField: 'code' },
-      { key: 'kits' as const, label: 'Kit', nameField: 'nameEn' },
+      { key: 'kits' as const, label: 'Kit', nameField: 'name' },
+      { key: 'units' as const, label: 'Unit of Measure', nameField: 'code' },
     ];
 
     types.forEach(t => {
@@ -44,7 +49,8 @@ export default function TrashBin() {
             // Check history protection (Rule G10)
             let hasHistory = false;
             if (t.key === 'ppeItems') {
-              hasHistory = store.issuances.some(i => i.ppeItemId === item.id) || store.stockMovements.some(m => m.ppeItemId === item.id);
+              // includes serial history, which is never removed (PPE-059)
+              hasHistory = store.itemHasTransactions(item.id);
             } else if (t.key === 'locations') {
               hasHistory = store.stockMovements.some(m => m.locationId === item.id || m.toLocationId === item.id) || store.issuances.some(i => i.locationId === item.id);
             } else if (t.key === 'kits') {
@@ -56,6 +62,7 @@ export default function TrashBin() {
               storeKey: t.key,
               id: item.id,
               name: item[t.nameField] || 'Unknown',
+              label: item.name || '',
               deletedAt: item.deletedAt,
               daysRemaining,
               hasHistory
@@ -68,16 +75,28 @@ export default function TrashBin() {
     return arr.sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
   }, [store, retentionPeriodDays]);
 
-  const handleRestore = (storeKey: 'ppeItems' | 'attributes' | 'itemGroups' | 'locations' | 'kits', id: string) => {
-    const res = store.restoreEntity(storeKey, id);
+  const [typeFilter, setTypeFilter] = React.useState('');
+  const [search, setSearch] = React.useState('');
+  const shown = deletedEntities.filter(e =>
+    (!typeFilter || e.storeKey === typeFilter) &&
+    (!search || `${e.name} ${e.label}`.toLowerCase().includes(search.toLowerCase())));
+
+  const handleRestore = (storeKey: TrashableCollection, id: string) => {
+    let res = store.restoreEntity(storeKey, id);
+    // PPE-048 / PPE-055: when the code is taken the Admin gives a new code before restoring
+    while (!res.success && res.codeTaken) {
+      const newCode = window.prompt(`${res.message}\n\nNew code:`);
+      if (!newCode) return;
+      res = store.restoreEntity(storeKey, id, newCode.trim());
+    }
     if (!res.success) {
       addToast(res.message || 'Cannot restore entity: dependency missing.', 'error');
     } else {
-      addToast('Item restored successfully from Trash Bin.', 'success');
+      addToast(storeKey === 'units' ? 'Unit restored as Inactive. Turn it on in Units of Measure.' : 'Item restored successfully from Trash Bin.', 'success');
     }
   };
 
-  const handlePurgeSingle = (storeKey: 'ppeItems' | 'attributes' | 'itemGroups' | 'locations' | 'kits', id: string) => {
+  const handlePurgeSingle = (storeKey: TrashableCollection, id: string) => {
     if (!window.confirm('Permanently delete this record? This action cannot be undone.')) return;
     const res = store.purgeEntity(storeKey, id);
     if (!res.success) {
@@ -95,8 +114,8 @@ export default function TrashBin() {
 
   return (
     <div>
-      <PageHeader 
-        title="Trash Bin & Data Retention (PPE-048)" 
+      <PageHeader
+        title="Trash Bin & Data Retention (PPE-048)"
         subtitle={`Soft-deleted records with 90-day retention countdown and Rule G10 historical protection`}
         actions={
           <Button variant="danger" size="sm" onClick={handlePurgeEligible}>
@@ -104,14 +123,28 @@ export default function TrashBin() {
           </Button>
         }
       />
-      
-      <DataTable 
-        data={deletedEntities}
+
+      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+        <Select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="sm:w-56" aria-label="Type">
+          <option value="">All types</option>
+          <option value="ppeItems">Items</option>
+          <option value="attributes">Attributes</option>
+          <option value="itemGroups">Item Groups</option>
+          <option value="locations">Locations</option>
+          <option value="kits">Kits</option>
+          <option value="units">Units of Measure</option>
+        </Select>
+        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search code or name..." className="sm:w-64" aria-label="Search" />
+      </div>
+
+      <DataTable
+        data={shown}
         keyExtractor={(item) => item.id}
         emptyState={<EmptyState icon={<Trash2 />} title="Trash is empty" description="No soft-deleted records found." />}
         columns={[
           { key: 'type', header: 'Entity Type', className: 'w-36 font-semibold', render: (item) => item.type },
           { key: 'name', header: 'Identifier', render: (item) => <span className="font-mono text-xs font-bold text-ink">{item.name}</span> },
+          { key: 'label', header: 'Name', render: (item) => <span className="text-xs">{item.label}</span> },
           { key: 'deletedAt', header: 'Deleted Date', render: (item) => format(new Date(item.deletedAt), 'yyyy-MM-dd HH:mm') },
           { key: 'retention', header: 'Retention Policy (G10)', render: (item) => (
             item.hasHistory ? (
@@ -120,7 +153,7 @@ export default function TrashBin() {
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-body bg-canvas border border-border px-2 py-0.5 rounded">
-                <Clock className="w-3.5 h-3.5" /> {item.daysRemaining} days left
+                <Clock className={`w-3.5 h-3.5${item.daysRemaining < 7 ? ' text-safety-red' : ''}`} /> <span className={item.daysRemaining < 7 ? 'text-safety-red font-bold' : ''}>{item.daysRemaining} days left</span>
               </span>
             )
           )},

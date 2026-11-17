@@ -1,3 +1,4 @@
+import { it } from 'vitest';
 import { usePPEStore } from '../store/useStore';
 import { PPEItem, Location, ItemGroup, Attribute, Employee } from '../types';
 
@@ -524,8 +525,13 @@ async function runAllTests() {
   console.log('\n🎉 ALL 21 VERIFICATION SUITES PASSED SUCCESSFULLY WITH ZERO REGRESSIONS!');
 }
 
-runAllTests().catch(err => {
-  console.error('Fatal Test Suite Error:', err);
-  process.exit(1);
-});
+if (process.env.VITEST) {
+  // Run under `npm test` as one Vitest test; still runnable as a plain script with tsx.
+  it('legacy PPE verification suite (21 suites)', runAllTests);
+} else {
+  runAllTests().catch(err => {
+    console.error('Fatal Test Suite Error:', err);
+    process.exit(1);
+  });
+}
 

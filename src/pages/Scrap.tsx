@@ -11,7 +11,7 @@ import { format, differenceInDays } from 'date-fns';
 
 export default function Scrap() {
   const { t, language } = useTranslation();
-  const { scrapEntries, currentUser, reverseScrap, ppeItems, locations } = usePPEStore();
+  const { scrapEntries, currentUser, reverseScrap, ppeItems, locations, getUnitSymbol } = usePPEStore();
   const addToast = useToastStore(s => s.addToast);
 
   const canReverse = ['Admin', 'HSE Supervisor'].includes(currentUser.role);
@@ -51,13 +51,13 @@ export default function Scrap() {
             { key: 'date', header: 'Date', render: (s) => format(new Date(s.createdAt), 'MMM d, yyyy') },
             { key: 'item', header: 'Item', render: (s) => {
               const item = ppeItems.find(p => p.id === s.ppeItemId);
-              return item ? (language === 'en' ? item.nameEn : item.nameAr) : s.ppeItemId;
+              return item ? item.name : s.ppeItemId;
             }},
             { key: 'location', header: 'Location', render: (s) => {
               const loc = locations.find(l => l.id === s.locationId);
-              return loc ? loc.nameEn : s.locationId;
+              return loc ? loc.name : s.locationId;
             }},
-            { key: 'qty', header: 'Qty', render: (s) => s.quantity },
+            { key: 'qty', header: 'Qty', render: (s) => `${s.quantity} ${getUnitSymbol(s.ppeItemId)}` },
             { key: 'reason', header: 'Reason', render: (s) => s.reason },
             { key: 'status', header: 'Status', render: (s) => (
                s.reversed ? (

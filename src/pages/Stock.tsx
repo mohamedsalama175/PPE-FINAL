@@ -18,7 +18,7 @@ import { format } from 'date-fns';
 export default function Stock() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { stockBalances, ppeItems, locations, batches, currentUser, quarantineBatch, releaseQuarantineBatch } = usePPEStore();
+  const { stockBalances, ppeItems, locations, batches, currentUser, quarantineBatch, releaseQuarantineBatch, getUnitSymbol, units } = usePPEStore();
   const [searchParams] = useSearchParams();
   const initialFilter = searchParams.get('filter');
   const addToast = useToastStore(s => s.addToast);
@@ -72,7 +72,7 @@ export default function Stock() {
       }
       if (search && b.item) {
         const q = search.toLowerCase();
-        return b.item.itemCode.toLowerCase().includes(q) || b.item.nameEn.toLowerCase().includes(q) || b.item.nameAr.includes(q);
+        return b.item.itemCode.toLowerCase().includes(q) || b.item.name.toLowerCase().includes(q);
       }
       return true;
     });
@@ -84,6 +84,10 @@ export default function Stock() {
   }, [batchModal, batches]);
 
   const handleApplyQuarantine = (batch: Batch) => {
+    if (ppeItems.find(p => p.id === batch.ppeItemId)?.serialTracked) {
+      addToast('Quarantine is not available for a serial-tracked item.', 'error');
+      return;
+    }
     if (!quarantineReason || quarantineReason.length < 5) {
       addToast('A valid reason (minimum 5 characters) is mandatory to quarantine a batch.', 'error');
       return;
@@ -141,7 +145,7 @@ export default function Stock() {
         <Select value={locationFilter} onChange={e => setLocationFilter(e.target.value)} className="w-48">
           <option value="all">All Locations</option>
           {viewableLocations.map(l => (
-            <option key={l.id} value={l.id}>{language === 'en' ? l.nameEn : l.nameAr}</option>
+            <option key={l.id} value={l.id}>{l.name}</option>
           ))}
         </Select>
         <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-44">
@@ -159,26 +163,26 @@ export default function Stock() {
         columns={[
           { key: 'item', header: 'PPE Item', render: (b) => (
             <div>
-              <div className="font-semibold text-ink">{b.item ? (language === 'en' ? b.item.nameEn : b.item.nameAr) : b.ppeItemId}</div>
-              <div className="text-xs font-mono text-body">{b.item?.itemCode} &middot; Reorder at {b.item?.reorderLevel} {b.item?.uom}</div>
+              <div className="font-semibold text-ink">{b.item ? b.item.name : b.ppeItemId}</div>
+              <div className="text-xs font-mono text-body">{b.item?.itemCode} &middot; Reorder at {b.item?.reorderLevel} {getUnitSymbol(b.ppeItemId)}</div>
             </div>
           )},
           { key: 'location', header: 'Location', render: (b) => (
             <div>
-              <div className="font-medium text-ink">{b.loc ? (language === 'en' ? b.loc.nameEn : b.loc.nameAr) : b.locationId}</div>
+              <div className="font-medium text-ink">{b.loc ? b.loc.name : b.locationId}</div>
               <div className="text-[11px] text-body">{b.loc?.site} &middot; {b.loc?.locationType}</div>
             </div>
           )},
           { key: 'available', header: 'Available (G9)', render: (b) => (
             <div className="text-center font-bold text-sm text-safety-green">
-              {b.available} <span className="text-[11px] font-normal text-body">{b.item?.uom || ''}</span>
+              {b.available} <span className="text-[11px] font-normal text-body">{getUnitSymbol(b.ppeItemId)}</span>
             </div>
           )},
           { key: 'quarantined', header: 'Quarantined', render: (b) => (
             <div className="text-center font-bold text-sm text-safety-amber-signal">
               {b.quarantined > 0 ? (
                 <span className="bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                  {b.quarantined} {b.item?.uom || ''}
+                  {b.quarantined} {getUnitSymbol(b.ppeItemId)}
                 </span>
               ) : (
                 <span className="text-body font-normal">0</span>
@@ -187,7 +191,7 @@ export default function Stock() {
           )},
           { key: 'total', header: 'Total On Hand', render: (b) => (
             <div className="text-right font-bold text-sm text-ink font-mono">
-              {b.quantityOnHand} {b.item?.uom || ''}
+              {b.quantityOnHand} {getUnitSymbol(b.ppeItemId)}
             </div>
           )},
           { key: 'status', header: 'Status', render: (b) => (
@@ -218,10 +222,10 @@ export default function Stock() {
             <div className="flex justify-between items-center px-6 py-4 border-b border-border bg-canvas">
               <div>
                 <h3 className="font-bold text-ink text-sm">
-                  Batches & Quarantine Management: {batchModal.item.nameEn}
+                  Batches & Quarantine Management: {batchModal.item.name}
                 </h3>
                 <p className="text-xs text-body mt-0.5">
-                  Location: <span className="font-semibold text-ink">{batchModal.loc.nameEn}</span>
+                  Location: <span className="font-semibold text-ink">{batchModal.loc.name}</span>
                 </p>
               </div>
               <button onClick={() => setBatchModal(null)} className="text-body hover:text-ink">

@@ -12,26 +12,28 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { SignatureModal } from '../components/ui/SignatureModal';
 import { downloadCsv } from '../lib/excelService';
 import { useToastStore } from '../store/toastStore';
-import { 
-  Clock, Plus, CornerDownLeft, X, Eye, 
+import {
+  Clock, Plus, CornerDownLeft, X, Eye,
   Download, AlertTriangle, CheckCircle2, ShieldAlert,
   FileSpreadsheet, User, Building, MapPin, Check
 } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { Issuance, LoanLineItem } from '../types';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 interface ReturnLineFormState {
   lineId: string;
   selected: boolean;
   returnQty: number;
   condition: 'good' | 'damaged' | 'worn_out' | 'lost';
+  serialIds: string[]; // PPE-058: returned serials of a tracked line
 }
 
 export default function OpenLoans() {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { issuances, ppeItems, employees, locations, currentUser, returnLoan } = usePPEStore();
+  const { issuances, ppeItems, employees, locations, currentUser, returnLoan, serialUnits, getUnitSymbol } = usePPEStore();
   const addToast = useToastStore(s => s.addToast);
 
   const [search, setSearch] = React.useState('');
@@ -50,8 +52,8 @@ export default function OpenLoans() {
 
   const isStoreKeeper = currentUser.role === 'Store Keeper';
   const myLocations = React.useMemo(() => {
-    return isStoreKeeper 
-      ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)).map(l => l.id) 
+    return isStoreKeeper
+      ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)).map(l => l.id)
       : locations.map(l => l.id);
   }, [currentUser.id, isStoreKeeper, locations]);
 
@@ -66,7 +68,7 @@ export default function OpenLoans() {
     if (isClosed) return 'closed';
 
     const hasOverdue = loan.expectedReturnDate && new Date(loan.expectedReturnDate) < new Date();
-    
+
     // Check lines
     const lines = loan.lines || [];
     const hasAnyReturned = lines.some(l => (l.returnedQty || 0) > 0 || l.status === 'returned');
@@ -151,8 +153,8 @@ export default function OpenLoans() {
     }
 
     const headers = [
-      'Loan Reference', 'Recipient Name', 'Company', 'Holder Type', 
-      'Host Employee', 'Issuing Location', 'Issue Date', 'Expected Return Date', 
+      'Loan Reference', 'Recipient Name', 'Company', 'Holder Type',
+      'Host Employee', 'Issuing Location', 'Issue Date', 'Expected Return Date',
       'Status', 'Total Quantity', 'Lines Detail'
     ];
 
@@ -162,7 +164,8 @@ export default function OpenLoans() {
       const st = getLoanStatus(l);
       const linesDesc = (l.lines || []).map(li => {
         const item = ppeItems.find(p => p.id === li.ppeItemId);
-        return `${item?.nameEn || li.ppeItemId} (Qty: ${li.quantity}, Ret: ${li.returnedQty || 0})`;
+        const sns = (li.serialIds || []).map(id => serialUnits.find(u => u.id === id)?.serial).filter(Boolean);
+        return `${item?.name || li.ppeItemId} (Qty: ${li.quantity} ${getUnitSymbol(li.ppeItemId)}, Ret: ${li.returnedQty || 0})${sns.length ? ` [${sns.join(', ')}]` : ''}`;
       }).join('; ');
 
       return [
@@ -171,7 +174,7 @@ export default function OpenLoans() {
         l.companyName || '',
         l.holderType || 'Visitor',
         hostEmp ? `${hostEmp.name} (${hostEmp.employeeCode})` : '',
-        loc?.nameEn || '',
+        loc?.name || '',
         format(new Date(l.issueDate), 'yyyy-MM-dd'),
         l.expectedReturnDate ? format(new Date(l.expectedReturnDate), 'yyyy-MM-dd') : '',
         st.toUpperCase(),
@@ -193,7 +196,8 @@ export default function OpenLoans() {
         lineId: l.id,
         selected: remaining > 0,
         returnQty: remaining,
-        condition: 'good'
+        condition: 'good',
+        serialIds: []
       };
     });
 
@@ -208,7 +212,15 @@ export default function OpenLoans() {
     e.preventDefault();
     if (!returnModalLoan) return;
 
-    const toReturn = returnLinesState.filter(r => r.selected && r.returnQty > 0);
+    const isTrackedLine = (lineId: string) => !!returnModalLoan.lines?.find(l => l.id === lineId)?.serialIds?.length;
+    const missing = returnLinesState.find(r => r.selected && isTrackedLine(r.lineId) && r.serialIds.length === 0);
+    if (missing) {
+      addToast('Pick or scan the returned serial numbers for each serial-tracked line.', 'error');
+      return;
+    }
+    const toReturn = returnLinesState
+      .map(r => isTrackedLine(r.lineId) ? { ...r, returnQty: r.serialIds.length } : r)
+      .filter(r => r.selected && r.returnQty > 0);
     if (toReturn.length === 0) {
       addToast('Please select at least one line with quantity to return.', 'error');
       return;
@@ -224,7 +236,8 @@ export default function OpenLoans() {
       returnedLines: toReturn.map(r => ({
         lineId: r.lineId,
         quantity: r.returnQty,
-        condition: r.condition
+        condition: r.condition,
+        serialIds: r.serialIds.length ? r.serialIds : undefined
       })),
       storeKeeperSignature,
       receiverSignature,
@@ -244,8 +257,8 @@ export default function OpenLoans() {
 
   return (
     <div className="space-y-6 pb-20">
-      <PageHeader 
-        title="Open Loans & Temporary Custody (PPE-041)" 
+      <PageHeader
+        title="Open Loans & Temporary Custody (PPE-041)"
         subtitle="Track temporary equipment loaned to visitors, contractors, and temporary personnel with overdue monitoring and line returns"
         actions={
           <div className="flex gap-2">
@@ -256,12 +269,12 @@ export default function OpenLoans() {
               <Plus className="w-4 h-4 mr-2" /> Issue New Loan
             </Button>
           </div>
-        } 
+        }
       />
 
       {/* Top Metric Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <div 
+        <div
           onClick={() => setStatusFilter('all')}
           className={`p-3 rounded-lg border cursor-pointer transition-all ${statusFilter === 'all' ? 'bg-accent/10 border-accent shadow-sm' : 'bg-surface border-border hover:bg-canvas'}`}
         >
@@ -269,7 +282,7 @@ export default function OpenLoans() {
           <div className="text-xl font-bold text-ink mt-0.5">{counts.total}</div>
         </div>
 
-        <div 
+        <div
           onClick={() => setStatusFilter('active_overdue')}
           className={`p-3 rounded-lg border cursor-pointer transition-all ${statusFilter === 'active_overdue' ? 'bg-blue-50 border-blue-400 shadow-sm' : 'bg-surface border-border hover:bg-canvas'}`}
         >
@@ -277,7 +290,7 @@ export default function OpenLoans() {
           <div className="text-xl font-bold text-blue-700 mt-0.5">{counts.active}</div>
         </div>
 
-        <div 
+        <div
           onClick={() => setStatusFilter('overdue')}
           className={`p-3 rounded-lg border cursor-pointer transition-all ${statusFilter === 'overdue' ? 'bg-red-50 border-safety-red shadow-sm' : 'bg-surface border-border hover:bg-canvas'}`}
         >
@@ -287,7 +300,7 @@ export default function OpenLoans() {
           <div className="text-xl font-bold text-safety-red mt-0.5">{counts.overdue}</div>
         </div>
 
-        <div 
+        <div
           onClick={() => setStatusFilter('partially_returned')}
           className={`p-3 rounded-lg border cursor-pointer transition-all ${statusFilter === 'partially_returned' ? 'bg-amber-50 border-amber-400 shadow-sm' : 'bg-surface border-border hover:bg-canvas'}`}
         >
@@ -295,7 +308,7 @@ export default function OpenLoans() {
           <div className="text-xl font-bold text-safety-amber-signal mt-0.5">{counts.partial}</div>
         </div>
 
-        <div 
+        <div
           onClick={() => setStatusFilter('closed')}
           className={`p-3 rounded-lg border cursor-pointer transition-all ${statusFilter === 'closed' ? 'bg-green-50 border-safety-green shadow-sm' : 'bg-surface border-border hover:bg-canvas'}`}
         >
@@ -306,15 +319,15 @@ export default function OpenLoans() {
 
       {/* Filter Bar */}
       <FilterBar>
-        <SearchInput 
-          placeholder="Search by loan ref, recipient, company, or host..." 
-          value={search} 
-          onChange={(e) => setSearch(e.target.value)} 
+        <SearchInput
+          placeholder="Search by loan ref, recipient, company, or host..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
         />
-        
-        <Select 
-          value={statusFilter} 
-          onChange={e => setStatusFilter(e.target.value as any)} 
+
+        <Select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value as any)}
           className="w-52"
         >
           <option value="active_overdue">Active & Overdue (Default)</option>
@@ -325,35 +338,35 @@ export default function OpenLoans() {
           <option value="closed">Closed / Fully Returned</option>
         </Select>
 
-        <Select 
-          value={locationFilter} 
-          onChange={e => setLocationFilter(e.target.value)} 
+        <Select
+          value={locationFilter}
+          onChange={e => setLocationFilter(e.target.value)}
           className="w-48"
         >
           <option value="all">All Issuing Locations</option>
           {locations
             .filter(l => myLocations.includes(l.id))
             .map(l => (
-              <option key={l.id} value={l.id}>{l.nameEn} ({l.code})</option>
+              <option key={l.id} value={l.id}>{l.name} ({l.code})</option>
             ))}
         </Select>
       </FilterBar>
 
       {/* Data Table */}
-      <DataTable 
+      <DataTable
         data={filteredLoans}
         keyExtractor={(item) => item.id}
         emptyState={
-          <EmptyState 
-            icon={<ShieldAlert />} 
-            title="No loan records found" 
-            description="No loans match the currently selected filters or status." 
+          <EmptyState
+            icon={<ShieldAlert />}
+            title="No loan records found"
+            description="No loans match the currently selected filters or status."
           />
         }
         columns={[
           { key: 'ref', header: 'Loan Number', render: (loan) => (
             <div>
-              <span 
+              <span
                 className="font-mono text-xs font-bold text-accent cursor-pointer hover:underline"
                 onClick={() => setSelectedLoan(loan)}
               >
@@ -364,7 +377,7 @@ export default function OpenLoans() {
           )},
           { key: 'recipient', header: 'Recipient & Company', render: (loan) => (
             <div>
-              <div 
+              <div
                 className="font-semibold text-ink cursor-pointer hover:underline"
                 onClick={() => setSelectedLoan(loan)}
               >
@@ -388,7 +401,7 @@ export default function OpenLoans() {
             const loc = locations.find(l => l.id === loan.locationId);
             return (
               <div>
-                <div className="text-xs font-medium text-ink">{loc?.nameEn || 'Store'}</div>
+                <div className="text-xs font-medium text-ink">{loc?.name || 'Store'}</div>
                 <div className="text-[10px] text-body font-mono">{loc?.code} ({loc?.stockCondition || 'Used'})</div>
               </div>
             );
@@ -416,7 +429,7 @@ export default function OpenLoans() {
             const lines = loan.lines || [];
             if (lines.length === 0) {
               const item = ppeItems.find(p => p.id === loan.ppeItemId);
-              return <span className="text-xs">{item?.nameEn || 'Equipment'} (Qty: {loan.quantity})</span>;
+              return <span className="text-xs">{item?.name || 'Equipment'} (Qty: {loan.quantity})</span>;
             }
 
             const openLines = lines.filter(l => (l.returnedQty || 0) < l.quantity && l.status !== 'returned');
@@ -452,8 +465,8 @@ export default function OpenLoans() {
 
             return (
               <div className="flex justify-end gap-1.5">
-                <Button 
-                  size="sm" 
+                <Button
+                  size="sm"
                   variant="secondary"
                   onClick={() => setSelectedLoan(loan)}
                   title="View Loan Details"
@@ -461,7 +474,7 @@ export default function OpenLoans() {
                   <Eye className="w-3.5 h-3.5" />
                 </Button>
                 {canReturn && (
-                  <Button 
+                  <Button
                     size="sm"
                     onClick={() => openReturnModal(loan)}
                   >
@@ -529,7 +542,7 @@ export default function OpenLoans() {
                   <span className="text-body font-bold uppercase tracking-wider text-[10px] block">Location</span>
                   {(() => {
                     const loc = locations.find(l => l.id === selectedLoan.locationId);
-                    return <div className="mt-0.5 font-semibold text-ink">{loc?.nameEn} ({loc?.code})</div>;
+                    return <div className="mt-0.5 font-semibold text-ink">{loc?.name} ({loc?.code})</div>;
                   })()}
                 </div>
               </div>
@@ -558,10 +571,10 @@ export default function OpenLoans() {
                         return (
                           <tr key={line.id} className="hover:bg-canvas/40">
                             <td className="p-2.5">
-                              <div className="font-semibold text-ink">{item?.nameEn || line.ppeItemId}</div>
+                              <div className="font-semibold text-ink">{item?.name || line.ppeItemId}</div>
                               <div className="text-[10px] text-body font-mono">{item?.itemCode}</div>
                             </td>
-                            <td className="p-2.5 text-center font-bold">{line.quantity}</td>
+                            <td className="p-2.5 text-center font-bold">{line.quantity} {getUnitSymbol(line.ppeItemId)}</td>
                             <td className="p-2.5 text-center text-safety-green font-bold">{returned}</td>
                             <td className="p-2.5 text-center font-bold">
                               {remaining > 0 ? (
@@ -661,7 +674,7 @@ export default function OpenLoans() {
                 <h4 className="text-xs font-bold uppercase tracking-wider text-body mb-2">
                   Select Lines & Specify Return Condition (Rule G6)
                 </h4>
-                
+
                 <div className="space-y-3">
                   {returnLinesState.map((lineState, idx) => {
                     const originalLine = returnModalLoan.lines?.find(l => l.id === lineState.lineId);
@@ -672,8 +685,8 @@ export default function OpenLoans() {
                       <div key={lineState.lineId} className="p-3 bg-canvas/60 border border-border rounded-lg space-y-2">
                         <div className="flex items-center justify-between">
                           <label className="flex items-center gap-2 cursor-pointer font-semibold text-xs text-ink">
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               checked={lineState.selected}
                               onChange={(e) => {
                                 const checked = e.target.checked;
@@ -681,19 +694,29 @@ export default function OpenLoans() {
                               }}
                               className="rounded border-border text-accent focus:ring-accent"
                             />
-                            <span>{item?.nameEn || 'Item'} ({item?.itemCode})</span>
+                            <span>{item?.name || 'Item'} ({item?.itemCode})</span>
                           </label>
                           <span className="text-[11px] text-body font-mono">Max Outstanding: {maxQty}</span>
                         </div>
 
+                        {lineState.selected && !!originalLine?.serialIds?.length && (
+                          <SerialPicker
+                            ppeItemId={originalLine.ppeItemId}
+                            candidates={serialUnits.filter(u => originalLine.serialIds!.includes(u.id) && !originalLine.returnedSerialIds?.includes(u.id) && u.status === 'On Loan' && u.holderIssuanceId === returnModalLoan.id)}
+                            value={lineState.serialIds}
+                            onChange={ids => setReturnLinesState(prev => prev.map(s => s.lineId === lineState.lineId ? { ...s, serialIds: ids } : s))}
+                            label="Returned serial numbers *"
+                          />
+                        )}
                         {lineState.selected && (
-                          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border/60">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
+                            {!originalLine?.serialIds?.length && (
                             <div>
                               <label className="block text-[10px] font-bold text-body uppercase tracking-wider mb-1">Return Quantity</label>
-                              <input 
-                                type="number" 
-                                min={1} 
-                                max={maxQty} 
+                              <input
+                                type="number"
+                                min={1}
+                                max={maxQty}
                                 value={lineState.returnQty}
                                 onChange={(e) => {
                                   const val = Math.min(maxQty, Math.max(1, parseInt(e.target.value, 10) || 1));
@@ -702,10 +725,11 @@ export default function OpenLoans() {
                                 className="w-full text-xs bg-surface border border-border rounded px-2.5 py-1.5 focus:outline-none"
                               />
                             </div>
+                            )}
 
                             <div>
                               <label className="block text-[10px] font-bold text-body uppercase tracking-wider mb-1">Physical Condition (Rule G6)</label>
-                              <select 
+                              <select
                                 value={lineState.condition}
                                 onChange={(e) => {
                                   const cond = e.target.value as any;
@@ -744,19 +768,19 @@ export default function OpenLoans() {
                       {storeKeeperSignature ? (
                         <div className="space-y-1.5">
                           <img src={storeKeeperSignature} alt="SK Signature" className="h-10 border border-border rounded bg-white p-1" />
-                          <button 
-                            type="button" 
-                            onClick={() => setActiveSigner('storeKeeper')} 
+                          <button
+                            type="button"
+                            onClick={() => setActiveSigner('storeKeeper')}
                             className="text-[10px] text-accent underline cursor-pointer"
                           >
                             Redraw Signature
                           </button>
                         </div>
                       ) : (
-                        <Button 
-                          type="button" 
-                          size="sm" 
-                          variant="secondary" 
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
                           onClick={() => setActiveSigner('storeKeeper')}
                         >
                           Capture Signature
@@ -776,19 +800,19 @@ export default function OpenLoans() {
                       {receiverSignature ? (
                         <div className="space-y-1.5">
                           <img src={receiverSignature} alt="Receiver Signature" className="h-10 border border-border rounded bg-white p-1" />
-                          <button 
-                            type="button" 
-                            onClick={() => setActiveSigner('receiver')} 
+                          <button
+                            type="button"
+                            onClick={() => setActiveSigner('receiver')}
                             className="text-[10px] text-accent underline cursor-pointer"
                           >
                             Redraw Signature
                           </button>
                         </div>
                       ) : (
-                        <Button 
-                          type="button" 
-                          size="sm" 
-                          variant="secondary" 
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
                           onClick={() => setActiveSigner('receiver')}
                         >
                           Capture Signature
@@ -810,7 +834,7 @@ export default function OpenLoans() {
 
       {/* HTML5 Canvas Signature Pad Modal */}
       {activeSigner && (
-        <SignatureModal 
+        <SignatureModal
           isOpen={true}
           onClose={() => setActiveSigner(null)}
           onSave={(dataUrl) => {

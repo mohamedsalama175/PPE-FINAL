@@ -23,7 +23,7 @@ export function exportEmployeeTimelinePdf({
 
   const rowsHtml = sorted.map((iss) => {
     const item = items.find(i => i.id === iss.ppeItemId);
-    const itemName = item ? `${item.nameEn} (${item.itemCode})` : (iss.kitId ? 'Job Position Kit' : 'PPE Item');
+    const itemName = item ? `${item.name} (${item.itemCode})` : (iss.kitId ? 'Job Position Kit' : 'PPE Item');
     const issueDateStr = iss.issueDate ? format(new Date(iss.issueDate), 'yyyy-MM-dd') : '-';
     const replaceDateStr = iss.expectedReplacementDate ? format(new Date(iss.expectedReplacementDate), 'yyyy-MM-dd') : (iss.expectedReturnDate ? format(new Date(iss.expectedReturnDate), 'yyyy-MM-dd') : '-');
 

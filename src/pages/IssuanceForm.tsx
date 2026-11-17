@@ -10,6 +10,7 @@ import { SignatureModal } from '../components/ui/SignatureModal';
 import { useToastStore } from '../store/toastStore';
 import { addDays, addMonths, addYears, format } from 'date-fns';
 import { ShieldCheck, AlertTriangle } from 'lucide-react';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function IssuanceForm() {
   const navigate = useNavigate();
@@ -18,8 +19,10 @@ export default function IssuanceForm() {
   const queryItemId = searchParams.get('itemId');
   const queryReplacesIssuanceId = searchParams.get('replacesIssuanceId');
 
-  const { ppeItems, locations, employees, issuances, currentUser, issueItem, batches, stockBalances, validateGenderMatch } = usePPEStore();
-  
+  const { ppeItems, locations, employees, issuances, currentUser, issueItem, batches, stockBalances, validateGenderMatch, units } = usePPEStore();
+  // PPE-058: serials picked for a tracked item (quantity = serials picked)
+  const [serialIds, setSerialIds] = React.useState<string[]>([]);
+
   const isStoreKeeper = currentUser.role === 'Store Keeper';
   const myLocations = React.useMemo(() => isStoreKeeper ? locations.filter(l => l.assignedStoreKeeperIds.includes(currentUser.id)) : locations, [isStoreKeeper, locations, currentUser.id]);
   const addToast = useToastStore(s => s.addToast);
@@ -69,6 +72,11 @@ export default function IssuanceForm() {
     return undefined;
   }, [selectedItem]);
 
+  const tracked = !!selectedItem?.serialTracked;
+  const unitSymbol = units.find(u => u.id === selectedItem?.unitId)?.symbol || '';
+  const quantity = tracked ? serialIds.length : formData.quantity;
+  React.useEffect(() => { setSerialIds([]); }, [formData.ppeItemId, formData.locationId]);
+
   React.useEffect(() => {
     if (!selectedItem || !selectedItem.locationIds.includes(formData.locationId)) {
       setIssuanceError('Item is not configured as valid for the selected location.');
@@ -77,8 +85,8 @@ export default function IssuanceForm() {
 
     const bal = stockBalances.find(b => b.ppeItemId === formData.ppeItemId && b.locationId === formData.locationId);
     const availableOnHand = bal ? Math.max(0, bal.quantityOnHand - (bal.quarantinedOnHand || 0)) : 0;
-    if (availableOnHand < formData.quantity) {
-      setIssuanceError(`Insufficient available stock (Available: ${availableOnHand}, Requested: ${formData.quantity}).`);
+    if (availableOnHand < quantity) {
+      setIssuanceError(`Insufficient available stock (Available: ${availableOnHand} ${unitSymbol}, Requested: ${quantity} ${unitSymbol}).`);
       return;
     }
 
@@ -90,9 +98,9 @@ export default function IssuanceForm() {
         return;
       }
     }
-    
+
     setIssuanceError('');
-  }, [formData.locationId, formData.ppeItemId, formData.quantity, formData.employeeId, formData.variantKey, selectedItem, stockBalances, validateGenderMatch]);
+  }, [formData.locationId, formData.ppeItemId, quantity, unitSymbol, formData.employeeId, formData.variantKey, selectedItem, stockBalances, validateGenderMatch]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,11 +108,15 @@ export default function IssuanceForm() {
       addToast(issuanceError, 'error');
       return;
     }
-    if (!formData.employeeId || !formData.ppeItemId || !formData.locationId || formData.quantity <= 0) {
+    if (tracked && serialIds.length === 0) {
+      addToast('Pick or scan the serial numbers being issued.', 'error');
+      return;
+    }
+    if (!formData.employeeId || !formData.ppeItemId || !formData.locationId || quantity <= 0) {
       addToast('Please fill all required fields correctly.', 'error');
       return;
     }
-    if (!formData.batchNumber) {
+    if (!tracked && !formData.batchNumber) {
       addToast('A valid active batch must be selected (Rule G14 FIFO).', 'error');
       return;
     }
@@ -112,13 +124,14 @@ export default function IssuanceForm() {
       addToast('Both digital signatures (Store Keeper & Receiver) are mandatory.', 'error');
       return;
     }
-    
+
     const res = issueItem({
       employeeId: formData.employeeId,
       ppeItemId: formData.ppeItemId,
       locationId: formData.locationId,
-      quantity: formData.quantity,
-      batchNumber: formData.batchNumber,
+      quantity,
+      batchNumber: tracked ? undefined : formData.batchNumber,
+      serialIds: tracked ? serialIds : undefined,
       variantKey: formData.variantKey,
       replacesIssuanceId: formData.replacesIssuanceId || undefined,
       issueDate: new Date().toISOString(),
@@ -126,7 +139,11 @@ export default function IssuanceForm() {
       receiverSignature: formData.receiverSignature,
       issuedBy: currentUser.id
     });
-    
+
+    if (!res.success) {
+      addToast(res.message || 'Issue failed.', 'error');
+      return;
+    }
     if (res.success) {
       addToast(formData.replacesIssuanceId ? 'Replacement PPE successfully issued. Prior issuance marked Replaced (PPE-034).' : 'PPE successfully issued with digital audit signatures.', 'success');
       navigate('/issuances');
@@ -135,8 +152,8 @@ export default function IssuanceForm() {
 
   return (
     <div className="max-w-3xl space-y-6 pb-20">
-      <PageHeader 
-        title="Issue PPE (Single Item)" 
+      <PageHeader
+        title="Issue PPE (Single Item)"
         subtitle="Direct equipment assignment with FIFO batch selection, lifespan calculation, and dual signatures"
         onBack={() => navigate('/issuances')}
       />
@@ -149,7 +166,7 @@ export default function IssuanceForm() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <FormSection title="Recipient & Location">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="Employee">
               <Select value={formData.employeeId} onChange={e => setFormData({...formData, employeeId: e.target.value})}>
                 {employees.filter(e => e.active).map(emp => (
@@ -163,7 +180,7 @@ export default function IssuanceForm() {
             <FormGroup label="Issuing Location">
               <Select value={formData.locationId} onChange={e => setFormData({...formData, locationId: e.target.value, batchNumber: ''})}>
                 {myLocations.map(l => (
-                  <option key={l.id} value={l.id}>{l.nameEn} ({l.site})</option>
+                  <option key={l.id} value={l.id}>{l.name} ({l.site})</option>
                 ))}
               </Select>
             </FormGroup>
@@ -178,11 +195,11 @@ export default function IssuanceForm() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FormGroup label="PPE Item">
               <Select value={formData.ppeItemId} onChange={e => setFormData({...formData, ppeItemId: e.target.value, batchNumber: ''})}>
                 {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
-                  <option key={p.id} value={p.id}>{p.nameEn} ({p.itemCode})</option>
+                  <option key={p.id} value={p.id}>{p.name} ({p.itemCode})</option>
                 ))}
               </Select>
             </FormGroup>
@@ -192,14 +209,20 @@ export default function IssuanceForm() {
                 <Select value={formData.variantKey} onChange={e => setFormData({...formData, variantKey: e.target.value})} required>
                   <option value="">Select Size / Variant...</option>
                   {selectedItem.variantAttributeValueIds.map(val => (
-                    <option key={val} value={val}>{val}</option> 
+                    <option key={val} value={val}>{val}</option>
                   ))}
                 </Select>
               </FormGroup>
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-4 mt-4">
+          {tracked ? (
+            <div className="mt-4 space-y-2">
+              <SerialPicker ppeItemId={formData.ppeItemId} locationId={formData.locationId} value={serialIds} onChange={setSerialIds} />
+              <p className="text-xs text-body">Quantity: <strong className="text-ink">{serialIds.length} {unitSymbol}</strong> (= serials picked)</p>
+            </div>
+          ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
             <FormGroup label="FIFO Recommended Batch (G14)">
               <Select value={formData.batchNumber} onChange={e => setFormData({...formData, batchNumber: e.target.value})}>
                 <option value="">Select Batch...</option>
@@ -211,15 +234,16 @@ export default function IssuanceForm() {
               </Select>
             </FormGroup>
 
-            <FormGroup label="Quantity">
-              <Input 
-                type="number" 
-                min="1" 
-                value={formData.quantity} 
-                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})} 
+            <FormGroup label={`Quantity (${unitSymbol || '-'})`}>
+              <Input
+                type="number"
+                min="1"
+                value={formData.quantity}
+                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value, 10) || 1})}
               />
             </FormGroup>
           </div>
+          )}
 
           {expectedReplacementDate && (
             <div className="mt-4 p-3 bg-canvas border border-border rounded flex items-center justify-between text-xs">
@@ -238,8 +262,8 @@ export default function IssuanceForm() {
               {formData.receiverSignature ? (
                 <div className="flex flex-col items-center">
                   <img src={formData.receiverSignature} alt="Receiver" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     onClick={() => setActiveSigner('receiver')}
                     className="text-[11px] text-accent hover:underline cursor-pointer"
                   >
@@ -259,8 +283,8 @@ export default function IssuanceForm() {
               {formData.storeKeeperSignature ? (
                 <div className="flex flex-col items-center">
                   <img src={formData.storeKeeperSignature} alt="Store Keeper" className="h-14 max-w-[180px] border border-border rounded bg-white shadow-sm mb-2" />
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     onClick={() => setActiveSigner('storeKeeper')}
                     className="text-[11px] text-accent hover:underline cursor-pointer"
                   >
@@ -275,7 +299,7 @@ export default function IssuanceForm() {
             </div>
           </div>
         </FormSection>
-        
+
         <div className="pt-4 flex justify-end gap-3 border-t border-border">
           <Button type="button" variant="ghost" onClick={() => navigate('/issuances')}>
             Cancel
@@ -287,7 +311,7 @@ export default function IssuanceForm() {
       </form>
 
       {/* Signature Capture Modal */}
-      <SignatureModal 
+      <SignatureModal
         isOpen={!!activeSigner}
         title={activeSigner === 'receiver' ? 'Receiver Digital Signature' : 'Store Keeper Digital Signature'}
         onClose={() => setActiveSigner(null)}

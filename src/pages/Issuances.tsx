@@ -16,13 +16,16 @@ import { ShieldAlert, Plus, CornerDownLeft, X, Clock, AlertTriangle } from 'luci
 import { format, differenceInDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { Issuance } from '../types';
+import { SerialPicker } from '../components/serials/SerialPicker';
 
 export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: boolean }) {
   const navigate = useNavigate();
   const { t, language } = useTranslation();
-  const { issuances, ppeItems, employees, currentUser, returnItem } = usePPEStore();
+  const { issuances, ppeItems, employees, currentUser, returnItem, serialUnits, units } = usePPEStore();
+  const [returnSerialIds, setReturnSerialIds] = React.useState<string[]>([]);
+  const symOf = (ppeItemId?: string) => units.find(u => u.id === ppeItems.find(p => p.id === ppeItemId)?.unitId)?.symbol || '';
   const addToast = useToastStore(s => s.addToast);
-  
+
   const [search, setSearch] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState(openLoansOnly ? 'issued' : 'all');
 
@@ -47,15 +50,15 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
       }
       if (isStoreKeeper && !myLocations.includes(i.locationId)) return false;
       if (statusFilter !== 'all' && i.status !== statusFilter) return false;
-      
+
       if (search) {
         const q = search.toLowerCase();
-        const targetName = i.employeeId 
-          ? employees.find(e => e.id === i.employeeId)?.name?.toLowerCase() 
+        const targetName = i.employeeId
+          ? employees.find(e => e.id === i.employeeId)?.name?.toLowerCase()
           : i.holderName?.toLowerCase();
         const refMatch = (i.reference || i.id).toLowerCase().includes(q);
         const compMatch = (i.companyName || '').toLowerCase().includes(q);
-          
+
         return targetName?.includes(q) || refMatch || compMatch;
       }
       return true;
@@ -71,25 +74,37 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
       return;
     }
 
-    returnItem(
-      returnModal.issuanceId, 
-      returnCondition, 
-      returnCondition === 'lost' ? false : physicalReceipt, 
+    const target = issuances.find(i => i.id === returnModal.issuanceId);
+    const tracked = !!target?.serialIds?.length;
+    if (tracked && returnSerialIds.length === 0) {
+      addToast('Pick or scan the returned serial numbers.', 'error');
+      return;
+    }
+
+    const res = returnItem(
+      returnModal.issuanceId,
+      returnCondition,
+      returnCondition === 'lost' ? false : physicalReceipt,
       currentUser.id,
       {
-        quantity: returnQty,
+        quantity: tracked ? returnSerialIds.length : returnQty,
         storeKeeperSignature,
-        employeeSignature
+        employeeSignature,
+        serialIds: tracked ? returnSerialIds : undefined
       }
     );
+    if (!res.success) {
+      addToast(res.message || 'Return failed.', 'error');
+      return;
+    }
     addToast('Return processed successfully (stock condition routed per Rule G6).', 'success');
     setReturnModal({ isOpen: false, issuanceId: null, maxQty: 1 });
   };
 
   return (
     <div>
-      <PageHeader 
-        title={openLoansOnly ? "Open Loans & Temporary Custody (PPE-041)" : t('issuance')} 
+      <PageHeader
+        title={openLoansOnly ? "Open Loans & Temporary Custody (PPE-041)" : t('issuance')}
         subtitle={openLoansOnly ? "Track active equipment loaned to visitors, contractors, and temporary personnel with overdue monitoring" : "Full record of issued, returned, and scrapped safety equipment"}
         actions={
           openLoansOnly ? (
@@ -108,14 +123,14 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
               </div>
             </div>
           )
-        } 
+        }
       />
-      
+
       <FilterBar>
-        <SearchInput 
-          placeholder="Search by name, reference, or company..." 
-          value={search} 
-          onChange={(e) => setSearch(e.target.value)} 
+        <SearchInput
+          placeholder="Search by name, reference, or company..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
         />
         {!openLoansOnly && (
           <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-48">
@@ -127,7 +142,7 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
         )}
       </FilterBar>
 
-      <DataTable 
+      <DataTable
         data={filteredIssuances}
         keyExtractor={(item) => item.id}
         emptyState={<EmptyState icon={<ShieldAlert />} title={openLoansOnly ? "No open loans currently active" : "No issuances found"} />}
@@ -166,8 +181,11 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
               const ppe = ppeItems.find(p => p.id === i.ppeItemId);
               return (
                 <div>
-                  <div className="font-medium text-ink">{ppe ? (language === 'en' ? ppe.nameEn : ppe.nameAr) : i.ppeItemId}</div>
-                  <div className="text-[11px] text-body font-mono">{ppe?.itemCode} &middot; Qty: {i.quantity}</div>
+                  <div className="font-medium text-ink">{ppe ? ppe.name : i.ppeItemId}</div>
+                  <div className="text-[11px] text-body font-mono">{ppe?.itemCode} &middot; Qty: {i.quantity} {symOf(i.ppeItemId)}</div>
+                  {!!i.serialIds?.length && (
+                    <div className="text-[10px] font-mono text-accent">{i.serialIds.map(id => serialUnits.find(u => u.id === id)?.serial).filter(Boolean).join(', ')}</div>
+                  )}
                 </div>
               );
             }
@@ -175,7 +193,7 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
               const kit = usePPEStore.getState().kits?.find(k => k.id === i.kitId);
               return (
                 <div>
-                  <div className="font-medium text-ink">{kit ? (language === 'en' ? kit.nameEn : kit.nameAr) : 'Job Kit'}</div>
+                  <div className="font-medium text-ink">{kit ? kit.name : 'Job Kit'}</div>
                   <div className="text-[11px] text-accent font-semibold">Standardized Kit (Qty: {i.quantity})</div>
                 </div>
               );
@@ -206,14 +224,14 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
             const d = i.expectedReturnDate || i.expectedReplacementDate;
             const isOverdue = d && new Date(d) < new Date() && i.status === 'issued';
             return (
-              <StatusBadge 
-                status={isOverdue ? 'error' : i.status === 'issued' ? 'info' : 'success'} 
-                label={isOverdue ? 'Overdue' : i.status} 
+              <StatusBadge
+                status={isOverdue ? 'error' : i.status === 'issued' ? 'info' : 'success'}
+                label={isOverdue ? 'Overdue' : i.status}
               />
             );
           }},
           { key: 'actions', header: '', className: 'text-right w-28', render: (i) => {
-            if (i.status === 'issued' && ['Admin', 'HSE Supervisor', 'Direct Supervisor', 'Store Keeper'].includes(currentUser.role)) {
+            if ((i.status === 'issued' || i.status === 'partially_returned') && !i.isLoan && ['Admin', 'HSE Supervisor', 'Direct Supervisor', 'Store Keeper'].includes(currentUser.role)) {
               return (
                 <Button variant="secondary" size="sm" onClick={() => {
                   setReturnModal({ isOpen: true, issuanceId: i.id, maxQty: i.quantity });
@@ -222,6 +240,7 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
                   setPhysicalReceipt(true);
                   setStoreKeeperSignature('');
                   setEmployeeSignature('');
+                  setReturnSerialIds([]);
                 }}>
                   <CornerDownLeft className="w-3 h-3 mr-1" /> Return
                 </Button>
@@ -243,12 +262,22 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
               </button>
             </div>
             <form onSubmit={handleReturnSubmit} className="p-5 flex-1 overflow-auto space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              {(() => {
+                const iss = issuances.find(x => x.id === returnModal.issuanceId);
+                if (!iss?.serialIds?.length) return null;
+                // PPE-058: pick or scan from the serials this person holds on this issuance
+                const held = serialUnits.filter(u => iss.serialIds!.includes(u.id) && !iss.returnedSerialIds?.includes(u.id) && u.status === 'Issued' && u.holderIssuanceId === iss.id);
+                return (
+                  <SerialPicker ppeItemId={iss.ppeItemId!} candidates={held} value={returnSerialIds} onChange={setReturnSerialIds} label="Returned serial numbers *" />
+                );
+              })()}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {!issuances.find(x => x.id === returnModal.issuanceId)?.serialIds?.length && (
                 <div>
                   <label className="block text-xs font-bold text-body uppercase tracking-wider mb-1">
                     Quantity Returned *
                   </label>
-                  <Input 
+                  <Input
                     type="number"
                     min="1"
                     max={returnModal.maxQty}
@@ -258,6 +287,7 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
                   />
                   <span className="text-[10px] text-body">Max: {returnModal.maxQty} issued</span>
                 </div>
+                )}
 
                 <div>
                   <label className="block text-xs font-bold text-body uppercase tracking-wider mb-1">
@@ -291,10 +321,10 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
               {returnCondition !== 'lost' && (
                 <div className="pt-1">
                   <label className="flex items-center gap-2 cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      checked={physicalReceipt} 
-                      onChange={(e) => setPhysicalReceipt(e.target.checked)} 
+                    <input
+                      type="checkbox"
+                      checked={physicalReceipt}
+                      onChange={(e) => setPhysicalReceipt(e.target.checked)}
                       className="rounded border-border w-4 h-4 text-accent"
                     />
                     <span className="text-xs text-ink font-semibold">I have physically verified and received the item back *</span>
@@ -344,7 +374,7 @@ export default function Issuances({ openLoansOnly = false }: { openLoansOnly?: b
       )}
 
       {/* Signature Capture Modal */}
-      <SignatureModal 
+      <SignatureModal
         isOpen={!!activeSigner}
         title={activeSigner === 'employee' ? 'Employee Return Signature' : 'Store Keeper Return Signature'}
         onClose={() => setActiveSigner(null)}

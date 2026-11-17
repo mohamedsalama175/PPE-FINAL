@@ -1,95 +1,97 @@
 import { 
   JobPosition, Location, Attribute, ItemGroup, PPEItem, Kit, Employee, 
   StockBalance, StockAdjustment, Issuance, IssuanceReturn, 
-  ScrapEntry, ModuleSettings, OpeningBalance, Batch, AuditLog 
+  ScrapEntry, ModuleSettings, OpeningBalance, Batch, AuditLog,
+  UnitOfMeasure, SerialUnit, SerialEvent
 } from '../types';
 
 export const mockJobPositions: JobPosition[] = [
-  { id: 'jp-1', code: 'JP-001', nameEn: 'Electrical Engineer', nameAr: 'مهندس كهرباء', active: true },
-  { id: 'jp-2', code: 'JP-002', nameEn: 'Mechanical Engineer', nameAr: 'مهندس ميكانيكا', active: true },
-  { id: 'jp-3', code: 'JP-003', nameEn: 'Site Supervisor', nameAr: 'مشرف موقع', active: true },
-  { id: 'jp-4', code: 'JP-004', nameEn: 'Welder', nameAr: 'لحام', active: true },
-  { id: 'jp-5', code: 'JP-005', nameEn: 'Scaffolder', nameAr: 'سقّال', active: true },
-  { id: 'jp-6', code: 'JP-006', nameEn: 'Laboratory Technician', nameAr: 'فني مختبر', active: true },
-  { id: 'jp-7', code: 'JP-007', nameEn: 'Warehouse Operator', nameAr: 'مشغل مستودع', active: true },
-  { id: 'jp-8', code: 'JP-008', nameEn: 'HSE Officer', nameAr: 'مسؤول سلامة', active: true },
-  { id: 'jp-9', code: 'JP-009', nameEn: 'Driver', nameAr: 'سائق', active: true },
-  { id: 'jp-10', code: 'JP-010', nameEn: 'General Laborer', nameAr: 'عامل عام', active: true },
+  { id: 'jp-1', code: 'JP-001', name: 'Electrical Engineer', active: true },
+  { id: 'jp-2', code: 'JP-002', name: 'Mechanical Engineer', active: true },
+  { id: 'jp-3', code: 'JP-003', name: 'Site Supervisor', active: true },
+  { id: 'jp-4', code: 'JP-004', name: 'Welder', active: true },
+  { id: 'jp-5', code: 'JP-005', name: 'Scaffolder', active: true },
+  { id: 'jp-6', code: 'JP-006', name: 'Laboratory Technician', active: true },
+  { id: 'jp-7', code: 'JP-007', name: 'Warehouse Operator', active: true },
+  { id: 'jp-8', code: 'JP-008', name: 'HSE Officer', active: true },
+  { id: 'jp-9', code: 'JP-009', name: 'Driver', active: true },
+  { id: 'jp-10', code: 'JP-010', name: 'General Laborer', active: true },
 ];
 
 export const mockLocations: Location[] = [
-  { id: 'loc-1', code: 'HQ-WH-01', nameEn: 'Main Warehouse', nameAr: 'المستودع الرئيسي', site: 'Main Campus', locationType: 'Central Warehouse', stockCondition: 'New', description: 'Primary central receiving store', capacityUnits: 1000, address: 'Site A, Block 1', active: true, assignedStoreKeeperIds: ['emp-8'] },
-  { id: 'loc-2', code: 'HQ-WH-02', nameEn: 'Secondary Warehouse', nameAr: 'المستودع الثانوي', site: 'North Field', locationType: 'Site Store', stockCondition: 'New', description: 'Site store for North Field', capacityUnits: 500, address: 'North Field Depot', active: true, assignedStoreKeeperIds: ['emp-8'] },
-  { id: 'loc-3', code: 'SITEB-01', nameEn: 'Site B Store', nameAr: 'مخزن الموقع ب', site: 'South Field', locationType: 'Site Store', stockCondition: 'New', description: 'Sub-store on South Field', capacityUnits: 200, address: 'Site B Storehouse', active: true, assignedStoreKeeperIds: [] },
-  { id: 'loc-4', code: 'SITEC-01', nameEn: 'Site C Store', nameAr: 'مخزن الموقع ج', site: 'Main Campus', locationType: 'General', stockCondition: 'New', description: 'General utility store', capacityUnits: 100, address: 'Site C Depot', active: true, assignedStoreKeeperIds: [] },
-  { id: 'loc-5', code: 'USED-WH-01', nameEn: 'Used Equipment Store', nameAr: 'مخزن المهمات المستعملة', site: 'Main Campus', locationType: 'Used', stockCondition: 'Used', description: 'Restored and inspected reusable PPE', capacityUnits: 500, address: 'Site A, Shed 2', active: true, assignedStoreKeeperIds: ['emp-8'] },
-  { id: 'loc-6', code: 'SCRAP-YD-01', nameEn: 'HSE Scrap Yard', nameAr: 'ساحة التكهين والإعدام', site: 'Main Campus', locationType: 'Scrap', stockCondition: 'Scrap', description: 'Damaged and decommissioned items awaiting disposal', capacityUnits: 400, address: 'Disposal Yard 4', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-1', code: 'HQ-WH-01', name: 'Main Warehouse', site: 'Main Campus', locationType: 'Central Warehouse', stockCondition: 'New', description: 'Primary central receiving store', capacityUnits: 1000, address: 'Site A, Block 1', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-2', code: 'HQ-WH-02', name: 'Secondary Warehouse', site: 'North Field', locationType: 'Site Store', stockCondition: 'New', description: 'Site store for North Field', capacityUnits: 500, address: 'North Field Depot', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-3', code: 'SITEB-01', name: 'Site B Store', site: 'South Field', locationType: 'Site Store', stockCondition: 'New', description: 'Sub-store on South Field', capacityUnits: 200, address: 'Site B Storehouse', active: true, assignedStoreKeeperIds: [] },
+  { id: 'loc-4', code: 'SITEC-01', name: 'Site C Store', site: 'Main Campus', locationType: 'General', stockCondition: 'New', description: 'General utility store', capacityUnits: 100, address: 'Site C Depot', active: true, assignedStoreKeeperIds: [] },
+  { id: 'loc-5', code: 'USED-WH-01', name: 'Used Equipment Store', site: 'Main Campus', locationType: 'Used', stockCondition: 'Used', description: 'Restored and inspected reusable PPE', capacityUnits: 500, address: 'Site A, Shed 2', active: true, assignedStoreKeeperIds: ['emp-8'] },
+  { id: 'loc-6', code: 'SCRAP-YD-01', name: 'HSE Scrap Yard', site: 'Main Campus', locationType: 'Scrap', stockCondition: 'Scrap', description: 'Damaged and decommissioned items awaiting disposal', capacityUnits: 400, address: 'Disposal Yard 4', active: true, assignedStoreKeeperIds: ['emp-8'] },
 ];
 
 export const mockAttributes: Attribute[] = [
-  { id: 'attr-1', code: 'SIZE-CLOTHING', nameEn: 'Clothing Size', nameAr: 'مقاس الملابس', active: true, values: [
+  { id: 'attr-1', code: 'SIZE-CLOTHING', name: 'Clothing Size', active: true, values: [
     { id: 'val-1-1', value: 'S', sortOrder: 1 }, { id: 'val-1-2', value: 'M', sortOrder: 2 }, { id: 'val-1-3', value: 'L', sortOrder: 3 }, { id: 'val-1-4', value: 'XL', sortOrder: 4 }
   ]},
-  { id: 'attr-2', code: 'SIZE-SHOES', nameEn: 'Shoe Size', nameAr: 'مقاس الحذاء', active: true, values: [
+  { id: 'attr-2', code: 'SIZE-SHOES', name: 'Shoe Size', active: true, values: [
     { id: 'val-2-1', value: '39', sortOrder: 1 }, { id: 'val-2-2', value: '40', sortOrder: 2 }, { id: 'val-2-3', value: '41', sortOrder: 3 }, { id: 'val-2-4', value: '42', sortOrder: 4 }
   ]},
-  { id: 'attr-3', code: 'COLOR', nameEn: 'Color', nameAr: 'اللون', active: true, values: [
+  { id: 'attr-3', code: 'COLOR', name: 'Color', active: true, values: [
     { id: 'val-3-1', value: 'Red', sortOrder: 1 }, { id: 'val-3-2', value: 'Blue', sortOrder: 2 }, { id: 'val-3-3', value: 'Yellow', sortOrder: 3 }
   ]},
-  { id: 'attr-4', code: 'GLOVE-SIZE', nameEn: 'Glove Size', nameAr: 'مقاس القفاز', active: true, values: [
+  { id: 'attr-4', code: 'GLOVE-SIZE', name: 'Glove Size', active: true, values: [
     { id: 'val-4-1', value: '8', sortOrder: 1 }, { id: 'val-4-2', value: '9', sortOrder: 2 }, { id: 'val-4-3', value: '10', sortOrder: 3 }
   ]},
-  { id: 'attr-5', code: 'MATERIAL', nameEn: 'Material', nameAr: 'المادة', active: true, values: [
+  { id: 'attr-5', code: 'MATERIAL', name: 'Material', active: true, values: [
     { id: 'val-5-1', value: 'Cotton', sortOrder: 1 }, { id: 'val-5-2', value: 'Leather', sortOrder: 2 }
   ]},
-  { id: 'attr-6', code: 'FILTER-TYPE', nameEn: 'Filter Type', nameAr: 'نوع الفلتر', active: true, values: [
+  { id: 'attr-6', code: 'FILTER-TYPE', name: 'Filter Type', active: true, values: [
     { id: 'val-6-1', value: 'P1', sortOrder: 1 }, { id: 'val-6-2', value: 'P2', sortOrder: 2 }, { id: 'val-6-3', value: 'P3', sortOrder: 3 }
   ]},
-  { id: 'attr-7', code: 'GENDER', nameEn: 'Gender Variant', nameAr: 'متغير النوع', active: true, values: [
+  { id: 'attr-7', code: 'GENDER', name: 'Gender Variant', active: true, values: [
     { id: 'val-7-1', value: 'Male', sortOrder: 1 }, { id: 'val-7-2', value: 'Female', sortOrder: 2 }, { id: 'val-7-3', value: 'Unisex', sortOrder: 3 }
   ]},
 ];
 
 export const mockItemGroups: ItemGroup[] = [
-  { id: 'ig-1', code: 'HEAD', nameEn: 'Head Protection', nameAr: 'حماية الرأس', active: true, attributeIds: ['attr-3'], requiresGenderMatch: false },
-  { id: 'ig-2', code: 'HAND', nameEn: 'Hand Protection', nameAr: 'حماية اليدين', active: true, attributeIds: ['attr-4', 'attr-5'], requiresGenderMatch: false },
-  { id: 'ig-3', code: 'FOOT', nameEn: 'Footwear', nameAr: 'أحذية السلامة', active: true, attributeIds: ['attr-2', 'attr-7'], requiresGenderMatch: true },
-  { id: 'ig-4', code: 'BODY', nameEn: 'Clothing', nameAr: 'ملابس واقية', active: true, attributeIds: ['attr-1', 'attr-3', 'attr-7'], requiresGenderMatch: true },
-  { id: 'ig-5', code: 'RESP', nameEn: 'Respiratory', nameAr: 'أجهزة تنفسية', active: true, attributeIds: ['attr-6'], requiresGenderMatch: false },
+  { id: 'ig-1', code: 'HEAD', name: 'Head Protection', active: true, attributeIds: ['attr-3'], requiresGenderMatch: false },
+  { id: 'ig-2', code: 'HAND', name: 'Hand Protection', active: true, attributeIds: ['attr-4', 'attr-5'], requiresGenderMatch: false },
+  { id: 'ig-3', code: 'FOOT', name: 'Footwear', active: true, attributeIds: ['attr-2', 'attr-7'], requiresGenderMatch: true },
+  { id: 'ig-4', code: 'BODY', name: 'Clothing', active: true, attributeIds: ['attr-1', 'attr-3', 'attr-7'], requiresGenderMatch: true },
+  { id: 'ig-5', code: 'RESP', name: 'Respiratory', active: true, attributeIds: ['attr-6'], requiresGenderMatch: false },
 ];
 
 export const mockPPEItems: PPEItem[] = [
-  { id: 'ppe-1', itemCode: 'HELM-YEL', nameEn: 'Safety Helmet Yellow', nameAr: 'خوذة سلامة صفراء', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 3, descriptionEn: 'Standard safety helmet for construction', descriptionAr: 'خوذة قياسية للمواقع الإنشائية', manufacturer: 'MSA', model: 'V-Gard', standardCertification: 'EN 397', riskCategory: 'II', reorderLevel: 50, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], uom: 'Piece' },
-  { id: 'ppe-2', itemCode: 'HELM-RED', nameEn: 'Safety Helmet Red', nameAr: 'خوذة سلامة حمراء', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 3, descriptionEn: 'Standard safety helmet for fire team', descriptionAr: 'خوذة لفريق الإطفاء والطوارئ', manufacturer: 'MSA', model: 'V-Gard', standardCertification: 'EN 397', riskCategory: 'II', reorderLevel: 10, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], uom: 'Piece' },
-  { id: 'ppe-3', itemCode: 'GLOV-LTH-9', nameEn: 'Leather Gloves Size 9', nameAr: 'قفازات جلد مقاس 9', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 3, descriptionEn: 'Heavy duty leather gloves for welding and rigging', descriptionAr: 'قفازات جلدية للخدمة الشاقة واللحام', manufacturer: 'Ansell', model: 'ActivArmr', standardCertification: 'EN 388', riskCategory: 'II', reorderLevel: 100, active: true, locationIds: ['loc-1', 'loc-2', 'loc-3'], variantAttributeValueIds: ['val-4-2', 'val-5-2'], uom: 'Pair' },
-  { id: 'ppe-4', itemCode: 'BOOT-S3-41', nameEn: 'Safety Boots S3 Size 41', nameAr: 'حذاء سلامة مقاس 41', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 12, descriptionEn: 'Steel toe puncture-resistant safety boots', descriptionAr: 'حذاء بمقدمة فولاذية ومقاوم للثقب', manufacturer: 'Puma Safety', model: 'Conquest', standardCertification: 'EN ISO 20345', riskCategory: 'II', reorderLevel: 20, active: true, locationIds: ['loc-1', 'loc-4'], variantAttributeValueIds: ['val-2-3', 'val-7-1'], uom: 'Pair' },
-  { id: 'ppe-5', itemCode: 'COV-COT-L', nameEn: 'Cotton Coverall Size L', nameAr: 'بدلة عمل قطن مقاس L', category: 'Clothing', itemGroupId: 'ig-4', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 6, descriptionEn: '100% Breathable cotton coverall with reflective tape', descriptionAr: 'بدلة عمل قطنية 100% مع أشرطة عاكسة', manufacturer: 'Dickies', model: 'Redhawk', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 30, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-1-3', 'val-5-1', 'val-7-1'], uom: 'Piece' },
-  { id: 'ppe-6', itemCode: 'RESP-P3', nameEn: 'P3 Respirator', nameAr: 'قناع تنفس P3', category: 'Respiratory', itemGroupId: 'ig-5', hasSize: false, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 30, descriptionEn: 'High efficiency particulate respirator FFP3', descriptionAr: 'قناع عالي الكفاءة للجسيمات الدقيقة FFP3', manufacturer: '3M', model: 'Aura 9332+', standardCertification: 'EN 149', riskCategory: 'III', reorderLevel: 200, active: true, locationIds: ['loc-1', 'loc-2'], variantAttributeValueIds: ['val-6-3'], uom: 'Piece' },
-  { id: 'ppe-7', itemCode: 'HELM-WELD', nameEn: 'Welding Helmet', nameAr: 'خوذة لحام مع تعتيم', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 2, descriptionEn: 'Auto-darkening welding helmet solar powered', descriptionAr: 'خوذة لحام تعتيم تلقائي تعمل بالطاقة الشمسية', manufacturer: 'Speedglas', model: '9100', standardCertification: 'EN 175', riskCategory: 'III', reorderLevel: 5, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], uom: 'Piece' },
-  { id: 'ppe-8', itemCode: 'VEST-YEL', nameEn: 'Hi-Vis Vest Yellow', nameAr: 'سترة عاكسة صفراء', category: 'Clothing', itemGroupId: 'ig-4', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 6, descriptionEn: 'Class 2 high visibility vest with front zipper', descriptionAr: 'سترة عاكسة فئة 2 مع سحاب أمامي', manufacturer: 'Portwest', model: 'C470', standardCertification: 'EN ISO 20471', riskCategory: 'I', reorderLevel: 100, active: true, locationIds: ['loc-1', 'loc-3', 'loc-4'], variantAttributeValueIds: ['val-1-3', 'val-3-3', 'val-7-3'], uom: 'Piece' },
-  { id: 'ppe-9', itemCode: 'GLOV-COT-M', nameEn: 'Cotton Gloves M', nameAr: 'قفازات قطن M', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 15, descriptionEn: 'Light general handling cotton gloves', descriptionAr: 'قفازات قطنية خفيفة للمناولة العامة', manufacturer: 'Local', model: 'Basic', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 500, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-4-2', 'val-5-1'], uom: 'Pair' },
-  { id: 'ppe-10', itemCode: 'GLOV-COT-L', nameEn: 'Cotton Gloves L', nameAr: 'قفازات قطن L', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 15, descriptionEn: 'Light general handling cotton gloves', descriptionAr: 'قفازات قطنية خفيفة للمناولة العامة', manufacturer: 'Local', model: 'Basic', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 500, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-4-3', 'val-5-1'], uom: 'Pair' },
-  { id: 'ppe-11', itemCode: 'HARNESS-FB', nameEn: 'Full Body Harness', nameAr: 'حزام أمان كامل للجسم', category: 'Fall Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 5, descriptionEn: 'Fall arrest full body safety harness with dorsal D-ring', descriptionAr: 'حزام أمان لمنع السقوط مع حلقة تثبيت خلفية', manufacturer: 'Petzl', model: 'Volt', standardCertification: 'EN 361', riskCategory: 'III', reorderLevel: 10, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], uom: 'Piece' },
-  { id: 'ppe-12', itemCode: 'EARPLUG-DISP', nameEn: 'Disposable Earplugs', nameAr: 'سدادات أذن للاستخدام لمرة واحدة', category: 'Hearing Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 1, descriptionEn: 'Soft polyurethane foam earplugs SNR 37dB', descriptionAr: 'سدادات أذن إسفنجية عازلة للصوت SNR 37dB', manufacturer: 'Howard Leight', model: 'Max', standardCertification: 'EN 352-2', riskCategory: 'II', reorderLevel: 50, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], uom: 'Box' },
-  { id: 'ppe-13', itemCode: 'GOGGLE-CLR', nameEn: 'Clear Safety Goggles', nameAr: 'نظارات سلامة شفافة', category: 'Eye Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 6, descriptionEn: 'Anti-scratch and anti-fog clear goggles', descriptionAr: 'نظارات واقية مقاومة للخدش والضباب', manufacturer: 'Uvex', model: 'Pheos', standardCertification: 'EN 166', riskCategory: 'II', reorderLevel: 30, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], uom: 'Piece' },
-  { id: 'ppe-14', itemCode: 'BOOT-S3-42', nameEn: 'Safety Boots S3 Size 42', nameAr: 'حذاء سلامة مقاس 42', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 12, descriptionEn: 'Steel toe safety boots', descriptionAr: 'حذاء سلامة بمقدمة فولاذية', manufacturer: 'Puma Safety', model: 'Conquest', standardCertification: 'EN ISO 20345', riskCategory: 'II', reorderLevel: 20, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-2-4', 'val-7-1'], uom: 'Pair' },
-  { id: 'ppe-15', itemCode: 'BOOT-RUB-41', nameEn: 'Rubber Boots Size 41', nameAr: 'حذاء مطاطي مقاوم مقاس 41', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 24, descriptionEn: 'Waterproof chemical resistant rubber boots', descriptionAr: 'حذاء مطاطي مقاوم للماء والمواد الكيميائية', manufacturer: 'Dunlop', model: 'Purofort', standardCertification: 'EN ISO 20347', riskCategory: 'I', reorderLevel: 15, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-2-3', 'val-7-3'], uom: 'Pair' },
+  { id: 'ppe-1', itemCode: 'HELM-YEL', name: 'Safety Helmet Yellow', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 3, description: 'Standard safety helmet for construction', manufacturer: 'MSA', model: 'V-Gard', standardCertification: 'EN 397', riskCategory: 'II', reorderLevel: 50, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-2', itemCode: 'HELM-RED', name: 'Safety Helmet Red', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 3, description: 'Standard safety helmet for fire team', manufacturer: 'MSA', model: 'V-Gard', standardCertification: 'EN 397', riskCategory: 'II', reorderLevel: 10, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-3', itemCode: 'GLOV-LTH-9', name: 'Leather Gloves Size 9', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 3, description: 'Heavy duty leather gloves for welding and rigging', manufacturer: 'Ansell', model: 'ActivArmr', standardCertification: 'EN 388', riskCategory: 'II', reorderLevel: 100, active: true, locationIds: ['loc-1', 'loc-2', 'loc-3'], variantAttributeValueIds: ['val-4-2', 'val-5-2'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-4', itemCode: 'BOOT-S3-41', name: 'Safety Boots S3 Size 41', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 12, description: 'Steel toe puncture-resistant safety boots', manufacturer: 'Puma Safety', model: 'Conquest', standardCertification: 'EN ISO 20345', riskCategory: 'II', reorderLevel: 20, active: true, locationIds: ['loc-1', 'loc-4'], variantAttributeValueIds: ['val-2-3', 'val-7-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-5', itemCode: 'COV-COT-L', name: 'Cotton Coverall Size L', category: 'Clothing', itemGroupId: 'ig-4', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 6, description: '100% Breathable cotton coverall with reflective tape', manufacturer: 'Dickies', model: 'Redhawk', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 30, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-1-3', 'val-5-1', 'val-7-1'], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-6', itemCode: 'RESP-P3', name: 'P3 Respirator', category: 'Respiratory', itemGroupId: 'ig-5', hasSize: false, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 30, description: 'High efficiency particulate respirator FFP3', manufacturer: '3M', model: 'Aura 9332+', standardCertification: 'EN 149', riskCategory: 'III', reorderLevel: 200, active: true, locationIds: ['loc-1', 'loc-2'], variantAttributeValueIds: ['val-6-3'], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-7', itemCode: 'HELM-WELD', name: 'Welding Helmet', category: 'Head Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 2, description: 'Auto-darkening welding helmet solar powered', manufacturer: 'Speedglas', model: '9100', standardCertification: 'EN 175', riskCategory: 'III', reorderLevel: 5, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-8', itemCode: 'VEST-YEL', name: 'Hi-Vis Vest Yellow', category: 'Clothing', itemGroupId: 'ig-4', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 6, description: 'Class 2 high visibility vest with front zipper', manufacturer: 'Portwest', model: 'C470', standardCertification: 'EN ISO 20471', riskCategory: 'I', reorderLevel: 100, active: true, locationIds: ['loc-1', 'loc-3', 'loc-4'], variantAttributeValueIds: ['val-1-3', 'val-3-3', 'val-7-3'], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-9', itemCode: 'GLOV-COT-M', name: 'Cotton Gloves M', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 15, description: 'Light general handling cotton gloves', manufacturer: 'Local', model: 'Basic', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 500, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-4-2', 'val-5-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-10', itemCode: 'GLOV-COT-L', name: 'Cotton Gloves L', category: 'Hand Protection', itemGroupId: 'ig-2', hasSize: true, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 15, description: 'Light general handling cotton gloves', manufacturer: 'Local', model: 'Basic', standardCertification: 'CE', riskCategory: 'I', reorderLevel: 500, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-4-3', 'val-5-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-11', itemCode: 'HARNESS-FB', name: 'Full Body Harness', category: 'Fall Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 5, description: 'Fall arrest full body safety harness with dorsal D-ring', manufacturer: 'Petzl', model: 'Volt', standardCertification: 'EN 361', riskCategory: 'III', reorderLevel: 10, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-12', itemCode: 'EARPLUG-DISP', name: 'Disposable Earplugs', category: 'Hearing Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Days', lifespanValue: 1, description: 'Soft polyurethane foam earplugs SNR 37dB', manufacturer: 'Howard Leight', model: 'Max', standardCertification: 'EN 352-2', riskCategory: 'II', reorderLevel: 50, active: true, locationIds: ['loc-1', 'loc-3'], variantAttributeValueIds: [], unitId: 'uom-box', serialTracked: false },
+  { id: 'ppe-13', itemCode: 'GOGGLE-CLR', name: 'Clear Safety Goggles', category: 'Eye Protection', itemGroupId: 'ig-1', hasSize: false, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 6, description: 'Anti-scratch and anti-fog clear goggles', manufacturer: 'Uvex', model: 'Pheos', standardCertification: 'EN 166', riskCategory: 'II', reorderLevel: 30, active: true, locationIds: ['loc-1'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: false },
+  { id: 'ppe-14', itemCode: 'BOOT-S3-42', name: 'Safety Boots S3 Size 42', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Male', lifespanType: 'Months', lifespanValue: 12, description: 'Steel toe safety boots', manufacturer: 'Puma Safety', model: 'Conquest', standardCertification: 'EN ISO 20345', riskCategory: 'II', reorderLevel: 20, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-2-4', 'val-7-1'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-15', itemCode: 'BOOT-RUB-41', name: 'Rubber Boots Size 41', category: 'Footwear', itemGroupId: 'ig-3', hasSize: true, gender: 'Unisex', lifespanType: 'Months', lifespanValue: 24, description: 'Waterproof chemical resistant rubber boots', manufacturer: 'Dunlop', model: 'Purofort', standardCertification: 'EN ISO 20347', riskCategory: 'I', reorderLevel: 15, active: true, locationIds: ['loc-1'], variantAttributeValueIds: ['val-2-3', 'val-7-3'], unitId: 'uom-prs', serialTracked: false },
+  { id: 'ppe-16', itemCode: 'GASDET-4G', name: 'Portable 4-Gas Detector', category: 'Respiratory', itemGroupId: 'ig-5', hasSize: false, gender: 'Unisex', lifespanType: 'Years', lifespanValue: 2, description: 'Personal multi-gas monitor (O2, LEL, CO, H2S), serial tracked', manufacturer: 'MSA', model: 'ALTAIR 4XR', standardCertification: 'ATEX', riskCategory: 'III', reorderLevel: 2, active: true, locationIds: ['loc-1', 'loc-2'], variantAttributeValueIds: [], unitId: 'uom-pcs', serialTracked: true },
 ];
 
 export const mockKits: Kit[] = [
-  { id: 'kit-1', nameEn: 'Standard Site Kit', nameAr: 'طقم الموقع القياسي', active: true, jobPositionId: 'jp-10', items: [
+  { id: 'kit-1', name: 'Standard Site Kit', active: true, jobPositionId: 'jp-10', items: [
     { id: 'ki-1', ppeItemId: 'ppe-1', qty: 1 }, { id: 'ki-2', ppeItemId: 'ppe-8', qty: 1 }, { id: 'ki-3', ppeItemId: 'ppe-13', qty: 1 }
   ]},
-  { id: 'kit-2', nameEn: 'Welder Kit', nameAr: 'طقم اللحام المتكامل', active: true, jobPositionId: 'jp-4', items: [
+  { id: 'kit-2', name: 'Welder Kit', active: true, jobPositionId: 'jp-4', items: [
     { id: 'ki-4', ppeItemId: 'ppe-7', qty: 1 }, { id: 'ki-5', ppeItemId: 'ppe-3', qty: 2 }, { id: 'ki-6', ppeItemId: 'ppe-5', qty: 1 }
   ]},
-  { id: 'kit-3', nameEn: 'Scaffolder Kit', nameAr: 'طقم السقالات والعمل على ارتفاع', active: true, jobPositionId: 'jp-5', items: [
+  { id: 'kit-3', name: 'Scaffolder Kit', active: true, jobPositionId: 'jp-5', items: [
     { id: 'ki-7', ppeItemId: 'ppe-1', qty: 1 }, { id: 'ki-8', ppeItemId: 'ppe-11', qty: 1 }, { id: 'ki-9', ppeItemId: 'ppe-9', qty: 3 }
   ]},
-  { id: 'kit-4', nameEn: 'Lab Technician Kit', nameAr: 'طقم فني المختبر الكيميائي', active: true, jobPositionId: 'jp-6', items: [
+  { id: 'kit-4', name: 'Lab Technician Kit', active: true, jobPositionId: 'jp-6', items: [
     { id: 'ki-10', ppeItemId: 'ppe-13', qty: 1 }, { id: 'ki-11', ppeItemId: 'ppe-9', qty: 5 }, { id: 'ki-12', ppeItemId: 'ppe-6', qty: 1 }
   ]},
-  { id: 'kit-5', nameEn: 'Manager Site Visit Kit', nameAr: 'طقم زيارة الإدارة للموقع', active: true, jobPositionId: 'jp-1', items: [
+  { id: 'kit-5', name: 'Manager Site Visit Kit', active: true, jobPositionId: 'jp-1', items: [
     { id: 'ki-13', ppeItemId: 'ppe-1', qty: 1 }, { id: 'ki-14', ppeItemId: 'ppe-8', qty: 1 }
   ]},
 ];
@@ -120,6 +122,7 @@ export const mockStockBalances: StockBalance[] = [
   { id: 'sb-8', ppeItemId: 'ppe-1', locationId: 'loc-3', quantityOnHand: 20, quarantinedOnHand: 0 },
   { id: 'sb-9', ppeItemId: 'ppe-1', locationId: 'loc-5', quantityOnHand: 12, quarantinedOnHand: 0 }, // Used location
   { id: 'sb-10', ppeItemId: 'ppe-7', locationId: 'loc-6', quantityOnHand: 3, quarantinedOnHand: 0 }, // Scrap location
+  { id: 'sb-11', ppeItemId: 'ppe-16', locationId: 'loc-1', quantityOnHand: 3, quarantinedOnHand: 0 }, // Serial tracked: equals In Stock serials
 ];
 
 export const mockBatches: Batch[] = [
@@ -128,6 +131,7 @@ export const mockBatches: Batch[] = [
   { id: 'batch-3', batchNumber: 'B-26-003', ppeItemId: 'ppe-3', locationId: 'loc-1', quantity: 200, availableQty: 200, quarantinedQty: 0, isQuarantined: false, expiryDate: '2027-12-31', costPerUnit: 8.5, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
   { id: 'batch-4', batchNumber: 'B-26-004', ppeItemId: 'ppe-4', locationId: 'loc-1', quantity: 15, availableQty: 15, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-06-30', costPerUnit: 45.0, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
   { id: 'batch-5', batchNumber: 'B-26-005', ppeItemId: 'ppe-8', locationId: 'loc-1', quantity: 120, availableQty: 120, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-01-15', costPerUnit: 6.0, status: 'Active', openingBalanceId: 'ob-1', createdAt: '2026-08-02T10:00:00Z' },
+  { id: 'batch-6', batchNumber: 'B-26-006', ppeItemId: 'ppe-16', locationId: 'loc-1', quantity: 3, availableQty: 3, quarantinedQty: 0, isQuarantined: false, expiryDate: '2028-08-01', costPerUnit: 950, status: 'Active', createdAt: '2026-08-02T10:00:00Z' },
 ];
 
 export const mockIssuances: Issuance[] = [
@@ -348,3 +352,34 @@ export const mockAuditLogs: AuditLog[] = [
     timestamp: '2026-08-01T09:30:00Z'
   }
 ];
+
+// Epic 11: units that exist besides the PPE-056 defaults (created by the free-text unit migration for 'Box').
+// The defaults PCS, PRS and SET are added once by seedDefaultUnits at store setup.
+export const mockUnits: UnitOfMeasure[] = [
+  { id: 'uom-box', code: 'BOX', name: 'Box', symbol: 'box', active: true, deletedAt: null, createdAt: '2026-08-01T08:00:00Z', createdBy: 'migration' },
+];
+
+// Epic 12: serial units of the demo tracked item (GASDET-4G), all In Stock at Main Warehouse.
+export const mockSerialUnits: SerialUnit[] = ['SN-GD-1001', 'SN-GD-1002', 'SN-GD-1003'].map((serial, i) => ({
+  id: `sn-${i + 1}`,
+  ppeItemId: 'ppe-16',
+  serial,
+  status: 'In Stock' as const,
+  locationId: 'loc-1',
+  lastLocationId: 'loc-1',
+  batchNumber: 'B-26-006',
+  createdAt: '2026-08-02T10:00:00Z',
+  createdBy: 'emp-8',
+  updatedAt: '2026-08-02T10:00:00Z',
+  updatedBy: 'emp-8',
+}));
+
+export const mockSerialEvents: SerialEvent[] = mockSerialUnits.map((u, i) => ({
+  id: `sev-${i + 1}`,
+  serialUnitId: u.id,
+  type: 'Stock in' as const,
+  date: u.createdAt,
+  userId: 'emp-8',
+  toLocationId: 'loc-1',
+  reference: 'B-26-006',
+}));

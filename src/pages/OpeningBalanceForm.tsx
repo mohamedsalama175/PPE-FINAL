@@ -11,6 +11,8 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 import { Trash2, Plus, Info, Upload, Download, AlertTriangle, CheckCircle2, Lock } from 'lucide-react';
 import { OpeningBalance, OpeningBalanceLine } from '../types';
 import { downloadCsv, parseCsv } from '../lib/excelService';
+import { SerialEntryBox } from '../components/serials/SerialEntryBox';
+import { normalizeSerial } from '../lib/serials';
 import { useToastStore } from '../store/toastStore';
 
 export default function OpeningBalanceForm() {
@@ -26,7 +28,9 @@ export default function OpeningBalanceForm() {
     rejectOpeningBalance,
     closeOpeningBalance,
     stockBalances,
-    batches
+    batches,
+    units,
+    validateNewSerials
   } = useStore();
 
   const addToast = useToastStore(s => s.addToast);
@@ -111,7 +115,17 @@ export default function OpeningBalanceForm() {
     lines.forEach((line, idx) => {
       if (!line.ppeItemId) newErrors[`line-${idx}-ppe`] = 'Item required';
       if (!line.batchNumber) newErrors[`line-${idx}-batch`] = 'Batch required';
-      if (!line.quantity || line.quantity <= 0) newErrors[`line-${idx}-qty`] = 'Quantity must be > 0';
+      const lineItem = ppeItems.find(p => p.id === line.ppeItemId);
+      if (lineItem?.serialTracked) {
+        // PPE-057: one serial per unit, quantity = serials entered
+        const serials = line.serialNumbers || [];
+        const others = lines.filter((_, j) => j !== idx && lines[j].ppeItemId === line.ppeItemId).flatMap(l => l.serialNumbers || []);
+        const errs = validateNewSerials(lineItem.id, serials);
+        const repeated = serials.find(sn => others.includes(sn));
+        if (serials.length === 0) newErrors[`line-${idx}-qty`] = 'Enter one serial number per unit';
+        else if (errs.length > 0) newErrors[`line-${idx}-qty`] = errs[0].message;
+        else if (repeated) newErrors[`line-${idx}-qty`] = `${repeated} is already on another line`;
+      } else if (!line.quantity || line.quantity <= 0) newErrors[`line-${idx}-qty`] = 'Quantity must be > 0';
 
       const key = `${line.ppeItemId}-${line.variantKey || ''}-${line.batchNumber}`;
       if (seenBatches.has(key)) {
@@ -147,7 +161,8 @@ export default function OpeningBalanceForm() {
       lines: lines as OpeningBalanceLine[],
       createdAt: formData.createdAt || new Date().toISOString()
     };
-    saveOpeningBalance(doc);
+    const res = saveOpeningBalance(doc);
+    if (!res.success) { addToast(res.message || 'Could not save.', 'error'); return; }
     addToast('Opening balance saved as Draft.', 'success');
     navigate('/stock/opening-balances');
   };
@@ -167,7 +182,8 @@ export default function OpeningBalanceForm() {
       createdAt: formData.createdAt || new Date().toISOString(),
       submittedAt: new Date().toISOString()
     };
-    saveOpeningBalance(doc);
+    const res = saveOpeningBalance(doc);
+    if (!res.success) { addToast(res.message || 'Could not submit.', 'error'); return; }
     addToast('Opening balance submitted for manager approval.', 'success');
     navigate('/stock/opening-balances');
   };
@@ -220,6 +236,8 @@ export default function OpeningBalanceForm() {
   const updateLine = (index: number, field: keyof OpeningBalanceLine, value: any) => {
     const newLines = [...lines];
     newLines[index] = { ...newLines[index], [field]: value };
+    if (field === 'ppeItemId') newLines[index].serialNumbers = undefined; // a new item starts a new serial list
+    if (field === 'serialNumbers') newLines[index].quantity = (value as string[]).length;
     setLines(newLines);
   };
 
@@ -229,11 +247,13 @@ export default function OpeningBalanceForm() {
 
   // PPE-024: Excel Template Download
   const handleDownloadTemplate = () => {
-    const headers = ['Item Code', 'Variant', 'Batch Number', 'Expiry Date (YYYY-MM-DD)', 'Quantity', 'Cost Per Unit'];
+    // PPE-057: a serial-tracked item takes one row per unit with its Serial Number (Quantity is ignored).
+    const headers = ['Item Code', 'Variant', 'Batch Number', 'Expiry Date (YYYY-MM-DD)', 'Quantity', 'Cost Per Unit', 'Serial Number'];
     const rows = [
-      ['HLM-001', 'Size L / Yellow', 'BATCH-2026-0001', '2028-12-31', 50, 120],
-      ['GLV-001', 'Size M', 'BATCH-2026-0002', '2027-06-30', 100, 35],
-      ['BOT-001', '42', 'BATCH-2026-0003', '2029-01-15', 30, 250]
+      ['HLM-001', 'Size L / Yellow', 'BATCH-2026-0001', '2028-12-31', 50, 120, ''],
+      ['GLV-001', 'Size M', 'BATCH-2026-0002', '2027-06-30', 100, 35, ''],
+      ['GASDET-4G', '', 'BATCH-2026-0003', '2029-01-15', 1, 950, 'SN-GD-2001'],
+      ['GASDET-4G', '', 'BATCH-2026-0003', '2029-01-15', 1, 950, 'SN-GD-2002']
     ];
     downloadCsv('ppe_opening_balance_template', headers, rows);
     addToast('Opening balance template CSV downloaded.', 'success');
@@ -273,6 +293,35 @@ export default function OpeningBalanceForm() {
         // Check if item is linked to the location
         if (formData.locationId && !item.locationIds.includes(formData.locationId)) {
           errs.push({ row: idx + 2, error: `Item ${itemCode} is not linked to this location`, line: r });
+          return;
+        }
+
+        if (item.serialTracked) {
+          if (!batchNum) {
+            errs.push({ row: idx + 2, error: 'Batch number is required', line: r });
+            return;
+          }
+          const sn = normalizeSerial(r['Serial Number'] || '');
+          if (!sn) {
+            errs.push({ row: idx + 2, error: `${itemCode} is serial tracked: Serial Number is required`, line: r });
+            return;
+          }
+          const problem = validateNewSerials(item.id, [sn])[0];
+          const inFile = [...lines, ...validLines].some(l => l.ppeItemId === item.id && l.serialNumbers?.includes(sn));
+          if (problem || inFile) {
+            errs.push({ row: idx + 2, error: problem ? problem.message : `${sn} is repeated in the file`, line: r });
+            return;
+          }
+          const same = validLines.find(l => l.ppeItemId === item.id && l.batchNumber === batchNum.trim() && (l.variantKey || '') === variant.trim());
+          if (same) {
+            same.serialNumbers = [...(same.serialNumbers || []), sn];
+            same.quantity = same.serialNumbers.length;
+          } else {
+            validLines.push({
+              id: generateId(), ppeItemId: item.id, variantKey: variant.trim() || undefined, batchNumber: batchNum.trim(),
+              expiryDate: expDate.trim() || undefined, quantity: 1, serialNumbers: [sn], costPerUnit: parseFloat(costStr) || 0
+            });
+          }
           return;
         }
 
@@ -421,7 +470,7 @@ export default function OpeningBalanceForm() {
               <option value="">Select Location...</option>
               {validLocations.map(loc => (
                 <option key={loc.id} value={loc.id}>
-                  {loc.code} - {loc.nameEn} ({loc.stockCondition}) {loc.openingBalanceClosed ? '[CLOSED]' : ''}
+                  {loc.code} - {loc.name} ({loc.stockCondition}) {loc.openingBalanceClosed ? '[CLOSED]' : ''}
                 </option>
               ))}
             </Select>
@@ -523,7 +572,8 @@ export default function OpeningBalanceForm() {
               ) : lines.map((line, idx) => {
                 const item = ppeItems.find(p => p.id === line.ppeItemId);
                 return (
-                  <tr key={idx} className="hover:bg-canvas/40">
+                  <React.Fragment key={line.id || idx}>
+                  <tr className="hover:bg-canvas/40">
                     <td className="px-4 py-3 align-top">
                       <Select
                         value={line.ppeItemId}
@@ -533,7 +583,7 @@ export default function OpeningBalanceForm() {
                       >
                         <option value="">Select Item...</option>
                         {ppeItems.filter(p => p.active && !p.deletedAt).map(p => (
-                          <option key={p.id} value={p.id}>{p.itemCode} - {p.nameEn}</option>
+                          <option key={p.id} value={p.id}>{p.itemCode} - {p.name}</option>
                         ))}
                       </Select>
                       {errors[`line-${idx}-ppe`] && <p className="text-[10px] text-red-500 mt-1">{errors[`line-${idx}-ppe`]}</p>}
@@ -578,6 +628,11 @@ export default function OpeningBalanceForm() {
                     </td>
 
                     <td className="px-4 py-3 align-top">
+                      {item?.serialTracked ? (
+                        <div className="text-xs font-bold py-2" title="Quantity = serials entered (PPE-057)">
+                          {(line.serialNumbers || []).length} {units.find(u => u.id === item.unitId)?.symbol}
+                        </div>
+                      ) : (
                       <Input
                         type="number"
                         min="1"
@@ -586,6 +641,7 @@ export default function OpeningBalanceForm() {
                         disabled={isReadOnly}
                         className={errors[`line-${idx}-qty`] ? 'border-red-500 text-xs' : 'text-xs font-bold'}
                       />
+                      )}
                       {errors[`line-${idx}-qty`] && <p className="text-[10px] text-red-500 mt-1">{errors[`line-${idx}-qty`]}</p>}
                     </td>
 
@@ -613,6 +669,29 @@ export default function OpeningBalanceForm() {
                       </td>
                     )}
                   </tr>
+                  {/* PPE-057: serial entry replaces the quantity for a tracked item */}
+                  {item?.serialTracked && (
+                    <tr className="bg-canvas/30">
+                      <td colSpan={7} className="px-4 pb-4 pt-1">
+                        {isReadOnly ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {(line.serialNumbers || []).map(sn => (
+                              <span key={sn} className="px-2 py-0.5 rounded bg-surface border border-border font-mono text-[11px]">{sn}</span>
+                            ))}
+                          </div>
+                        ) : (
+                          <SerialEntryBox
+                            id={`ob-serials-${idx}`}
+                            ppeItemId={item.id}
+                            value={line.serialNumbers || []}
+                            onChange={sns => updateLine(idx, 'serialNumbers', sns)}
+                            otherLineSerials={lines.filter((l, j) => j !== idx && l.ppeItemId === item.id).flatMap(l => l.serialNumbers || [])}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
