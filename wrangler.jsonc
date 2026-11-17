@@ -1,0 +1,11 @@
+{
+  // Cloudflare Workers static site for the PPE demo (built by `npm run build` into dist/).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ppe-final",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist",
+    // Any unknown path (e.g. /units or /serials/sn-1 on refresh) serves index.html
+    "not_found_handling": "single-page-application"
+  }
+}
